@@ -112,8 +112,8 @@ function kvsGet(sim, params) {
 
 function kvsSet(sim, params) {
     const isNewKey = !(params.key in sim.kvs);
-    if (params.key.length > limits.KVS_KEY_LIMIT) return failed(limits.ERR_INVALID_ARGUMENT, 'Invalid argument \'key\': too long');
-    if (limits.kvsLength(String(params.value)) > limits.KVS_VALUE_LIMIT) return failed(limits.ERR_INVALID_ARGUMENT, 'Invalid argument \'value\': too long');
+    if (params.key.length > limits.KVS_KEY_LIMIT) return failed(limits.ERR_INVALID_ARGUMENT, `Invalid argument 'key': length should be less than ${limits.KVS_KEY_LIMIT}!`);
+    if (limits.kvsLength(String(params.value)) > limits.KVS_VALUE_LIMIT) return failed(limits.ERR_INVALID_ARGUMENT, 'Invalid argument \'value\': length should be less than 255!');
     if (isNewKey && Object.keys(sim.kvs).length >= limits.KVS_KEY_COUNT_LIMIT) return failed(limits.ERR_RESOURCE_EXHAUSTED, `Reached the maximum ${limits.KVS_KEY_COUNT_LIMIT} of keys`);
     sim.kvs[params.key] = params.value;
     return ok({ etag: 'e', rev: 1 });
@@ -192,7 +192,7 @@ function forecastAnswer(sim, url) {
 }
 
 function httpAnswer(sim, url) {
-    if (sim.httpFail && sim.httpFail.test(url)) return failed(limits.ERR_ASSUMED, 'Deadline exceeded');
+    if (sim.httpFail && sim.httpFail.test(url)) return failed(limits.ERR_HTTP_FAILURE_ASSUMED, 'Deadline exceeded');
     if (url.indexOf('dashboard.elering.ee') >= 0) return ok(eleringAnswer(sim, url));
     if (url.indexOf('api.open-meteo.com') >= 0) return ok(forecastAnswer(sim, url));
     throw new Error('No simulated answer for ' + url);
@@ -200,9 +200,7 @@ function httpAnswer(sim, url) {
 
 function httpGet(sim, params) {
     sim.httpRequests.push(params.url);
-    const answer = httpAnswer(sim, params.url);
-    sim.httpAnswers[params.url] = clone(answer);
-    return answer;
+    return httpAnswer(sim, params.url);
 }
 
 function scriptList(sim) {
@@ -269,8 +267,8 @@ function shellyApi(sim) {
                 crash(sim, `more than ${limits.RPC_CALL_LIMIT} RPC calls in flight (${method})`);
                 return;
             }
-            sim.calls.push({ method, params: params ? clone(params) : params });
             const [result, code, message] = answerOf(sim, method, params);
+            sim.calls.push({ method, params: params ? clone(params) : params, answer: clone([result, code, message]) });
             sim.callsInFlight++;
             addTask(sim, sim.nowMs, () => {
                 sim.callsInFlight--;
@@ -352,7 +350,6 @@ function initialState(deviceOptions) {
         calls: [],
         logs: [],
         httpRequests: [],
-        httpAnswers: {},
         statusHandlers: [],
         timers: [],
         lastTimerHandle: 0,

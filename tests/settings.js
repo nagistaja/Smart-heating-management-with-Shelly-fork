@@ -1,6 +1,10 @@
 'use strict';
 
 const DEVICE_TIME_ZONE = 'Europe/Tallinn';
+const DEVICE_DAYLIGHT_SAVING = {
+    shiftMinutes: 60, standardOffsetMinutes: 120, lastWeekOfMonth: 4, sunday: 0,
+    marchIndex: 2, startMinuteOfDay: 180, octoberIndex: 9, endMinuteOfDay: 240,
+};
 const SCRIPT_VERSION = 4.9;
 
 const MILLISECONDS_PER_SECOND = 1000;
@@ -37,7 +41,7 @@ const GEN3_DEVICE = { gen: 3, app: 'S3SW-001P16EU', ver: '1.7.6', id: 'shelly1pm
 const GEN4_DEVICE = { gen: 4, app: 'Mini1PMG4', ver: '2.2.1', id: 'shelly1pmminig4-test' };
 
 module.exports = {
-    DEVICE_TIME_ZONE, SCRIPT_VERSION,
+    DEVICE_TIME_ZONE, DEVICE_DAYLIGHT_SAVING, SCRIPT_VERSION,
     MILLISECONDS_PER_SECOND, SECONDS_PER_MINUTE, MINUTES_PER_HOUR, HOURS_PER_DAY, RELAY_OVERLAP_SECONDS,
     DEFAULT_CONF, STORAGE_TANK_CONF, HOT_WATER_CONF,
     NORMAL_DAY, HOT_WATER_DAY, NEGATIVE_DAY, SPRING_DST_DAY, AUTUMN_DST_DAY,

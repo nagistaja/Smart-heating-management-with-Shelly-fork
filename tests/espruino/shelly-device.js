@@ -1,183 +1,165 @@
 var __device = {
     nowMs: __scenario.now,
-    scheduleIds: [],
-    tasks: [],
+    answeredCalls: 0,
+    slots: [],
     taskSequence: 0,
     lastTimerHandle: 0,
-    clearedTimers: {},
     crashed: null,
     baselineBlocks: 0,
 };
 
 function __setClock(ms) {
     __device.nowMs = ms;
-    setTime(ms / 1000);
+    setTime(ms / __scenario.millisecondsPerSecond);
 }
 
-function __addTask(dueMs, callback, args) {
-    __device.tasks.push({ dueMs: dueMs, sequence: __device.taskSequence++, callback: callback, args: args });
+function __reportError(text) {
+    print(__scenario.marks.error + ' ' + text);
 }
 
-function __ok(result) {
-    return [result, 0, ''];
+// the firmware allocates every answer anew in the script's memory, so the script must not be handed the scenario's own strings and objects
+function __freshCopy(value) {
+    if (typeof value === 'string') return value.slice(0);
+    if (value === null || typeof value !== 'object') return value;
+    var copy = value instanceof Array ? [] : {};
+    for (var key in value) copy[key] = __freshCopy(value[key]);
+    return copy;
 }
 
-function __failed(code, message) {
-    return [null, code, message];
-}
-
-// the firmware allocates every HTTP answer anew in the script's memory, so the script must not get the scenario's own string
-function __httpGet(params) {
-    var answer = __scenario.http[params.url];
-    if (!answer) {
-        print('MOCKERR no answer for ' + params.url);
-        return __failed(__scenario.limits.errAssumed, 'No answer');
+// A pending timer costs a script no memory on a device, so the queue must cost none here: its slots are made before the
+// baseline is taken and reused. A slot keeps the shape it was made with, a large number in dueMs included, so filling it allocates nothing.
+function __makeSlots(count) {
+    for (var i = 0; i < count; i++) {
+        __device.slots.push({ isUsed: false, dueMs: __scenario.now, sequence: 0, callback: null, userdata: null, answer: null, handle: 0, intervalMs: 0 });
     }
-    var result = answer[0];
-    if (!result) return __failed(answer[1], answer[2]);
-    var copy = { code: result.code };
-    if (result.body_b64 !== undefined) copy.body_b64 = result.body_b64.slice(0);
-    if (result.body !== undefined) copy.body = result.body.slice(0);
-    return __ok(copy);
 }
 
-function __scheduleCreate(params) {
-    if (__device.scheduleIds.length >= __scenario.limits.schedules) return __failed(__scenario.limits.errResourceExhausted, 'Reached the maximum of jobs');
-    if (params.calls.length > __scenario.limits.scheduleCalls) return __failed(__scenario.limits.errInvalidArgument, 'Invalid argument \'calls\'');
-    var id = 1;
-    __device.scheduleIds.forEach(function (takenId) { if (takenId >= id) id = takenId + 1; });
-    __device.scheduleIds.push(id);
-    print('MOCK schedule.create ' + JSON.stringify({ id: id, timespec: params.timespec }));
-    return __ok({ id: id, rev: 1 });
+function __addTask(dueMs, callback, userdata, answer, handle, intervalMs) {
+    for (var i = 0; i < __device.slots.length; i++) {
+        var slot = __device.slots[i];
+        if (slot.isUsed) continue;
+        slot.isUsed = true;
+        slot.dueMs = dueMs;
+        slot.sequence = __device.taskSequence++;
+        slot.callback = callback;
+        slot.userdata = userdata;
+        slot.answer = answer;
+        slot.handle = handle;
+        slot.intervalMs = intervalMs;
+        return;
+    }
+    __reportError('more than ' + __device.slots.length + ' timers and RPC answers pending');
 }
 
-function __scheduleDelete(params) {
-    var index = __device.scheduleIds.indexOf(params.id);
-    if (index < 0) return __failed(__scenario.limits.errInvalidArgument, 'Invalid argument \'id\': Not found!');
-    __device.scheduleIds.splice(index, 1);
-    return __ok({ rev: 1 });
+function __free(slot) {
+    slot.isUsed = false;
+    slot.callback = null;
+    slot.userdata = null;
+    slot.answer = null;
 }
-
-function __kvsGet(params) {
-    var value = __scenario.kvs[params.key];
-    if (value === undefined) return __failed(__scenario.limits.errNotFound, 'Argument \'key\', value \'' + params.key + '\' not found!');
-    return __ok({ value: value, etag: 'e' });
-}
-
-// the device keeps KVS outside the script's memory, so a written value is printed and not stored here
-function __kvsSet(params) {
-    print('MOCK kvs.set ' + JSON.stringify({ key: params.key, value: params.value }));
-    return __ok({ etag: 'e', rev: 1 });
-}
-
-function __isKnownScript(id) {
-    return __scenario.scripts.some(function (script) { return script.id === id; });
-}
-
-function __scriptList() {
-    return __ok({ scripts: __scenario.scripts.map(function (script) { return { id: script.id, name: script.name, running: script.running }; }) });
-}
-
-var __RPC_HANDLERS = {
-    'kvs.get': __kvsGet,
-    'kvs.set': __kvsSet,
-    'schedule.create': __scheduleCreate,
-    'schedule.delete': __scheduleDelete,
-    'http.get': __httpGet,
-    'script.list': __scriptList,
-    'switch.setconfig': function () { return __ok({ restart_required: false }); },
-    'script.create': function () { return __ok({ id: __scenario.scripts.length + 1 }); },
-    'script.putcode': function (params) { return __ok({ len: params.code.length }); },
-    'script.setconfig': function () { return __ok({ restart_required: false }); },
-    'script.start': function () { return __ok({ was_running: false }); },
-};
 
 var Shelly = {
     call: function (method, params, callback, userdata) {
-        var handler = __RPC_HANDLERS[method.toLowerCase()];
-        if (!handler) {
-            print('MOCKERR method ' + method + ' is not simulated');
+        var recorded = __scenario.calls[__device.answeredCalls];
+        __device.answeredCalls++;
+        if (!recorded || recorded.method !== method) {
+            __reportError('call ' + __device.answeredCalls + ' is ' + method + ', in Node it was ' + (recorded ? recorded.method : 'not made'));
             return;
         }
-        var answer = handler(params || {});
-        if (typeof callback === 'function') __addTask(__device.nowMs, callback, [answer[0], answer[1], answer[2], userdata]);
+        if (recorded.timespec !== undefined && recorded.timespec !== params.timespec) {
+            __reportError('schedule ' + params.timespec + ', in Node it was ' + recorded.timespec);
+        }
+        if (typeof callback === 'function') __addTask(__device.nowMs, callback, userdata, recorded.answer, 0, 0);
     },
     getComponentStatus: function (type) {
-        if (type === 'sys') return { unixtime: Math.floor(__device.nowMs / 1000) };
+        if (type === 'sys') return { unixtime: Math.floor(__device.nowMs / __scenario.millisecondsPerSecond) };
         return { mem_used: 0, mem_peak: 0 };
     },
     getComponentConfig: function (type, id) {
-        if (type === 'sys') return { location: { lat: __scenario.location.lat, lon: __scenario.location.lon } };
-        return { enable: __isKnownScript(id) };
+        if (type === 'sys') return { location: __freshCopy(__scenario.location) };
+        return { enable: __scenario.scripts.some(function (script) { return script.id === id && script.enable; }) };
     },
-    getDeviceInfo: function () { return __scenario.deviceInfo; },
+    getDeviceInfo: function () { return __freshCopy(__scenario.deviceInfo); },
     getCurrentScriptId: function () { return __scenario.scriptId; },
 };
 
 var Timer = {
     set: function (delayMs, isRepeating, callback, userdata) {
         var handle = ++__device.lastTimerHandle;
-        var fire = function (data) {
-            if (__device.clearedTimers[handle]) return;
-            if (isRepeating) __addTask(__device.nowMs + delayMs, fire, [data]);
-            callback(data);
-        };
-        __addTask(__device.nowMs + delayMs, fire, [userdata]);
+        __addTask(__device.nowMs + delayMs, callback, userdata, null, handle, isRepeating ? delayMs : 0);
         return handle;
     },
     clear: function (handle) {
-        __device.clearedTimers[handle] = true;
-        return true;
+        for (var i = 0; i < __device.slots.length; i++) {
+            var slot = __device.slots[i];
+            if (slot.isUsed && slot.handle === handle) {
+                __free(slot);
+                return true;
+            }
+        }
+        return false;
     },
 };
 
-function __nextDueTaskIndex(untilMs) {
-    var next = -1;
-    for (var i = 0; i < __device.tasks.length; i++) {
-        var task = __device.tasks[i];
-        if (task.dueMs > untilMs) continue;
-        var best = __device.tasks[next];
-        if (next < 0 || task.dueMs < best.dueMs || (task.dueMs === best.dueMs && task.sequence < best.sequence)) next = i;
+function __nextDueSlot(untilMs) {
+    var next = null;
+    for (var i = 0; i < __device.slots.length; i++) {
+        var slot = __device.slots[i];
+        if (!slot.isUsed || slot.dueMs > untilMs) continue;
+        if (!next || slot.dueMs < next.dueMs || (slot.dueMs === next.dueMs && slot.sequence < next.sequence)) next = slot;
     }
     return next;
 }
 
-function __runTask(task) {
-    if (task.dueMs > __device.nowMs) __setClock(task.dueMs);
-    process.memory(true);
+function __runSlot(slot) {
+    var callback = slot.callback;
+    var userdata = slot.userdata;
+    var answer = slot.answer;
+    if (slot.dueMs > __device.nowMs) __setClock(slot.dueMs);
+    if (slot.intervalMs > 0) {
+        slot.dueMs = __device.nowMs + slot.intervalMs;
+        slot.sequence = __device.taskSequence++;
+    } else {
+        __free(slot);
+    }
     try {
-        task.callback.apply(undefined, task.args);
+        if (answer) callback(__freshCopy(answer[0]), answer[1], answer[2], userdata);
+        else callback(userdata);
     } catch (error) {
         __device.crashed = String(error) + (error && error.stack ? '\n' + error.stack : '');
-        print('MOCKERR uncaught ' + __device.crashed);
+        __reportError('uncaught ' + __device.crashed);
     }
 }
 
 function __runFor(seconds) {
-    var untilMs = __device.nowMs + seconds * 1000;
-    for (var index = __nextDueTaskIndex(untilMs); index >= 0 && !__device.crashed; index = __nextDueTaskIndex(untilMs)) {
-        __runTask(__device.tasks.splice(index, 1)[0]);
+    var untilMs = __device.nowMs + seconds * __scenario.millisecondsPerSecond;
+    for (var slot = __nextDueSlot(untilMs); slot && !__device.crashed; slot = __nextDueSlot(untilMs)) {
+        __runSlot(slot);
     }
     __setClock(untilMs);
 }
 
 function __report() {
     var memory = process.memory(true);
-    print('MEMRESULT ' + JSON.stringify({
+    print(__scenario.marks.result + ' ' + JSON.stringify({
         baselineBlocks: __device.baselineBlocks,
         peakBlocks: memory.peak,
         retainedBlocks: memory.usage,
         blockBytes: memory.blocksize,
+        answeredCalls: __device.answeredCalls,
         errors: E.getErrorFlags(),
         crashed: __device.crashed,
-        version: process.version,
     }));
 }
 
 Math.random = function () { return 0; };
-E.setTimeZone(2);
-E.setDST(60, 120, 4, 0, 2, 0, 180, 4, 0, 9, 0, 240);
+E.setDST(
+    __scenario.daylightSaving.shiftMinutes, __scenario.daylightSaving.standardOffsetMinutes,
+    __scenario.daylightSaving.lastWeekOfMonth, __scenario.daylightSaving.sunday, __scenario.daylightSaving.marchIndex, 0, __scenario.daylightSaving.startMinuteOfDay,
+    __scenario.daylightSaving.lastWeekOfMonth, __scenario.daylightSaving.sunday, __scenario.daylightSaving.octoberIndex, 0, __scenario.daylightSaving.endMinuteOfDay
+);
 __setClock(__scenario.now);
+__makeSlots(__scenario.pendingTaskLimit);
 
 __device.baselineBlocks = process.memory(true).usage;
 process.resetPeakMemory();

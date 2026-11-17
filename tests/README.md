@@ -29,7 +29,7 @@ The tests pin what the script does today, also where that differs from the price
 - Imatra summer or winter hours follow the clock of the device, not the hour being priced.
 - The plan of the 23 hour day 2026-03-29 contains hour 0 of the next day.
 - Without a period, the first quarter of the next day counts as hour 0.
-- A Gen2 Pro on firmware 1.4.3 stays in KVS mode, although the comment in the script names 1.4.3 as the first firmware with Virtual Components. 1.4.4 is the first that gets them.
+- A Gen2 Pro on firmware 1.4.3 stays in KVS mode, although the comment in the script names 1.4.3 as the first firmware with Virtual Components. The script uses them from 1.4.4 on.
 
 The network fee tests call `fFee` and set `_.prov` and `c.pack` inside the script, because the fee has no other way out of it.
 
@@ -56,7 +56,7 @@ The network fee tests call `fFee` and set `_.prov` and `c.pack` inside the scrip
 |---|---|---|
 | RPC calls in flight per script | 5, counted only within one synchronous run, see below | Shelly docs, Script Language Reference, Resource Limits. Gen4: the sixth call stops the script with "Too many calls in progress". |
 | Active timers per script | 5 | Shelly docs, same page. Gen4: the sixth timer stops the script with "Too many running timers." |
-| Schedules per device | 20, then `-108` | Shelly docs, Schedule, and Gen4. The job that updates the firmware automatically is one of the 20. |
+| Schedules per device | 20, then `-108` | Shelly docs, Schedule, and Gen4. On a device the job that updates the firmware automatically is one of the 20. The simulated device starts with no schedules. |
 | Calls in one schedule | 5, then `-103` | Shelly docs, Schedule, and Gen4 |
 | Virtual components per device, the group included | 10, then `-108` | Shelly docs, Virtual, and Gen4: a group and nine components were accepted, the next one was refused |
 | Virtual component ID | 200 to 299, else `-103`. Each ID once per component type, else `-106`. | Shelly docs, Virtual, and Gen4 |
@@ -77,7 +77,7 @@ The simulated devices are a Shelly Plus 1PM (Gen2, KVS mode), a Shelly Pro 1PM (
 
 ### Assumed error code
 
-No source gives the error code of an `HTTP.GET` that fails. The simulation answers it with `ERR_ASSUMED`. The script only tests for a non-zero code, so the number does not change a test result.
+No source gives the error code of an `HTTP.GET` that fails. The simulation answers it with `ERR_HTTP_FAILURE_ASSUMED`. The script only tests for a non-zero code, so the number does not change a test result.
 
 More than 5 RPC calls in flight, more than 5 active timers, a run that never comes to rest and an exception in a timer or RPC callback end a test with `sim.crashed` set. An exception while the script loads fails the test directly, and so does an RPC method the simulation does not know.
 
@@ -86,7 +86,7 @@ More than 5 RPC calls in flight, more than 5 active timers, a run that never com
 A passing test does not prove these. They need a real device.
 
 - The script engine. Node accepts JavaScript that the engine of the device does not.
-- Memory use and the size of the script.
+- Whether the script fits in the memory of a device. [Memory](#memory) compares one version of the script with another.
 - The call stack of the engine. A Shelly Plus 1PM stopped a script at about five nested calls (seen in November 2026, firmware not recorded).
 - Time taken by RPC and HTTP answers. Every answer arrives in the same simulated millisecond, so the limit of 5 calls only counts calls sent before the script yields. Calls that overlap over time on a device are not counted.
 - Schedules firing. A schedule is stored but never runs, and the relay is never switched. Heating time is worked out from the timespec and the auto-off delay.
@@ -95,7 +95,7 @@ A passing test does not prove these. They need a real device.
 - The size of an HTTP answer.
 - Paging of `Shelly.GetComponents`. The simulation returns every component in one answer. So did the Gen4 with ten components. A Shelly 1 Mini Gen3 on firmware 2.0.3 returned six of ten when the configuration was asked for as well.
 - `Script.PutCode` refusing characters outside ASCII, as seen on a Plus 1PM. The Gen4 accepted them.
-- Differences between device generations and firmware versions. Most rows of the table above were measured on a Gen4 only and are assumed to hold on Gen2 and Gen3. Known differences: a Gen2 Plus has no virtual components, yet the simulation would create them there, and on Gen2 all scripts of a device share one memory pool.
+- Differences between device generations and firmware versions. Most rows of the table above were measured on a Gen4 only and are assumed to hold on Gen2 and Gen3. One known difference: a Gen2 Plus has no virtual components, yet the simulation would create them there.
 
 ## Memory
 
@@ -106,25 +106,33 @@ npm run test:memory
 
 The memory test runs one calculation of the script in Espruino, the interpreter the Shelly script engine is built on, and reads how much of the engine's memory the script takes. `npm test` does not run it.
 
-`build-espruino.sh` builds Espruino for Linux in Docker, from a fixed Espruino commit and `espruino-shelly.patch`, into `tests/espruino/bin/`. The build is 32-bit, so a memory block is 14 bytes as on the devices. The patch adds a counter of the highest memory use, a clock the test can set, a memory size given at start and the loading of several files into one interpreter. `build-espruino.sh --native` builds without Docker, with 18 byte blocks, so its numbers differ.
+| File | What it is |
+|---|---|
+| `build-espruino.sh` | Builds Espruino for Linux in Docker into `tests/espruino/bin/`, from a fixed Espruino commit. The build is 32-bit, so a memory block is 14 bytes as on the devices. |
+| `espruino-shelly.patch` | Applied to Espruino before the build: a counter of the highest memory use, a clock the test can set, a memory size given at start and the loading of several files into one interpreter. |
+| `script-memory.js` | The test: three sets of settings on five days, with the numbers of version 4.9 for each. |
+| `engine.js` | Runs a case first in Node, then in Espruino. |
+| `shelly-device.js` | The simulated device inside Espruino. It answers each RPC call with the answer the same call got in Node, so the two runs cannot drift apart. |
+| `one-cycle.js` | Runs one calculation and prints the result. |
+
+`build-espruino.sh` reads two variables. `ESPRUINO_WORKDIR` keeps the Espruino sources between builds, otherwise they go to a temporary directory that is removed. `ESPRUINO_DOCKER_OPTIONS` is passed to `docker run`.
 
 The GitHub Action builds Espruino once, in about 40 seconds, and keeps it in the cache until the build script or the patch changes. On the GitHub runner the 32-bit container cannot open a network socket under the default seccomp profile of Docker, so the Action sets `ESPRUINO_DOCKER_OPTIONS` to `--security-opt seccomp=unconfined` for the build container. On a workstation the default profile is enough.
 
-| File | What it is |
-|---|---|
-| `script-memory.js` | The test: three sets of settings on five days. |
-| `engine.js` | Runs the same case first in Node, then in Espruino with the HTTP answers of the Node run. |
-| `shelly-device.js` | The simulated device inside Espruino. It keeps as little as it can, because it lives in the memory that is measured. |
-| `one-cycle.js` | Runs one calculation and prints the result. |
+### What is measured
 
-Two numbers are measured, both above what the simulated device itself holds:
+Every case runs in KVS mode on a simulated Shelly Plus 1PM, from an empty device, so the calculation includes the install of the watchdog. Virtual Component mode is not measured.
+
+Two numbers are read, both counted from the moment the simulated device is ready and the script has not been loaded yet:
 
 - **Peak**: the most memory in use at one moment while the script loads and plans, checked at every allocation.
 - **Retained**: what is still in use after the calculation.
 
-Every case must also plan the same schedule in Espruino as in Node.
+The simulated device keeps its queue of pending timers and RPC answers in memory it took before that moment, so the queue is not in the numbers. On a Gen4 a second and a third pending timer added nothing to the memory of a script either. What stays in the numbers are the function calls of the simulated device while it calls into the script: a script that is one empty function with one timer and one RPC answer peaks at 518 bytes here and retains 140. That part is the same for every version of the script.
 
-Version 4.9 peaks at 17 430 bytes at most and retains 4 536. The test fails when a change needs more. A change that needs less lowers the two numbers in `script-memory.js`, so the gain shows in the pull request.
+The memory Espruino gets for the test is 5000 blocks, far more than a device has, so a case never fails for lack of memory.
+
+In Espruino the script must make the same RPC calls in the same order as in Node, with the same schedule. `script-memory.js` holds the peak and the retained memory of version 4.9 for every case, between 15 624 and 16 072 bytes of peak and 3 948 to 3 976 bytes retained. A change that moves any of them fails the test until the table is updated, so a gain or a loss shows in the pull request.
 
 ### How the numbers relate to a device
 
