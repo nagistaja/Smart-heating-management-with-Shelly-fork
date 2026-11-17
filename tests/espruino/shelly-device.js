@@ -200,12 +200,11 @@ __setClock(__scenario.now);
 __makeSlots(__scenario.pendingTaskLimit);
 
 // Espruino makes the object of a built-in at its first use, in the measured memory. On a device a script pays for it in the same
-// way, except for the methods of a string, a number and a boolean (Shelly 1PM Mini Gen4, firmware 2.2.1). So these three are used
-// here first, and the two typed arrays this file has used are removed again for a script to pay for its own. Math stays, because
-// the Math.random of the test lives in it.
+// way, except for the methods of a string, a number and a boolean (Shelly 1PM Mini Gen4, firmware 2.2.1). So a method of a string
+// and one of a number are used here first, the methods of a boolean come with those of a number. The two typed arrays this file
+// has used are removed again for a script to pay for its own. Math stays, because the Math.random of the test lives in it.
 'a'.length;
 (1).toFixed(0);
-true.toString();
 delete global.Float64Array;
 delete global.Uint32Array;
 

@@ -146,7 +146,7 @@ Espruino makes the object of a built-in such as `Date` or `JSON` when a script f
 | `JSON` | 28 | 28 |
 | `console.log` | 42 | 42 |
 | A caught `Error` | 112 | 112 |
-| A typed array, for each type | 112 | 112 |
+| A typed array (`Float64Array`, `Float32Array`, `Uint32Array`, `Uint16Array`, `Uint8Array`), each type | 112 | 112 |
 | `Math` | 28 | 0 |
 | `Number(...)`, `String(...)`, `Object.keys`, `Array.isArray` | 42 each | 0 |
 | `new Array(...)` | 112 | 0 |
