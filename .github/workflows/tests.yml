@@ -42,6 +42,4 @@ jobs:
           key: espruino-${{ hashFiles('tests/espruino/build-espruino.sh', 'tests/espruino/espruino-shelly.patch') }}
       - if: steps.espruino.outputs.cache-hit != 'true'
         run: tests/espruino/build-espruino.sh
-        env:
-          ESPRUINO_DOCKER_OPTIONS: --security-opt seccomp=unconfined
       - run: npm run test:memory

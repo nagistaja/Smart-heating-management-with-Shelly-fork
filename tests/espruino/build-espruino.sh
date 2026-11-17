@@ -3,7 +3,7 @@ set -euo pipefail
 
 ESPRUINO_REPO=https://github.com/espruino/Espruino.git
 ESPRUINO_COMMIT=e73051ad4b9380a562da40796626254af1a19d57 # 2v29, 2026-10-06 "fix classic ESP32 build"
-DOCKER_IMAGE=i386/debian:trixie-slim@sha256:48a6ec1047c40f162d2766a088014f59009e8a35d0dfdb5e966573f7eb7b980f
+DOCKER_IMAGE=debian:trixie-slim
 CONTAINER=shelly-espruino-build
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -32,14 +32,13 @@ checkout() {
 # docker cp instead of a bind mount: Docker Desktop shares only some host paths
 build() {
     docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
-    # unquoted on purpose: ESPRUINO_DOCKER_OPTIONS may hold several options
-    docker run -d --name "$CONTAINER" ${ESPRUINO_DOCKER_OPTIONS:-} "$DOCKER_IMAGE" sleep infinity >/dev/null
+    docker run -d --name "$CONTAINER" "$DOCKER_IMAGE" sleep infinity >/dev/null
     docker exec -e DEBIAN_FRONTEND=noninteractive "$CONTAINER" bash -c \
-        "apt-get update -qq && apt-get install -y -qq gcc g++ make python3 python-is-python3 git >/dev/null"
+        "apt-get update -qq && apt-get install -y -qq gcc-multilib g++-multilib make python3 python-is-python3 git >/dev/null"
     docker exec "$CONTAINER" bash -c "mkdir -p /src && git config --global --add safe.directory /src"
     tar -C "$src" -cf - . | docker cp - "$CONTAINER:/src"
     docker exec "$CONTAINER" bash -c \
-        'cd /src && mkdir -p bin && LDFLAGS="-Winline -g -static" make BOARD=LINUX_SHELLY -j"$(nproc)" >/build.log 2>&1 || { tail -20 /build.log; exit 1; }'
+        'cd /src && mkdir -p bin && LDFLAGS="-Winline -g -static" make BOARD=LINUX_SHELLY ARCHFLAGS=-m32 -j"$(nproc)" >/build.log 2>&1 || { tail -20 /build.log; exit 1; }'
     docker cp "$CONTAINER:/src/bin/espruino" "$here/bin/espruino"
 }
 
