@@ -62,10 +62,10 @@ function scenarioOf(sim, isComparing) {
 }
 
 // stdin stays open: at end of input the Espruino console reads junk into its input line, which lives in the measured pool
-function runBinary(files) {
+function runBinary(files, poolBlocks) {
     return new Promise((resolve, reject) => {
         const child = spawn(BINARY, files, {
-            env: Object.assign({}, process.env, { ESPRUINO_VARS: String(POOL_BLOCKS) }),
+            env: Object.assign({}, process.env, { ESPRUINO_VARS: String(poolBlocks) }),
             stdio: ['pipe', 'pipe', 'pipe'],
         });
         let output = '';
@@ -88,7 +88,7 @@ function linesAfter(lines, mark) {
     return lines.filter((line) => line.startsWith(mark + ' ')).map((line) => line.slice(mark.length + 1));
 }
 
-function parse(run) {
+function parse(run, poolBlocks) {
     const lines = run.output.split('\n');
     const [resultText] = linesAfter(lines, MARKS.result);
     if (!resultText || run.exitCode !== 0) {
@@ -100,7 +100,7 @@ function parse(run) {
         peakBytes: (result.peakBlocks - result.baselineBlocks) * result.blockBytes,
         retainedBytes: (result.retainedBlocks - result.baselineBlocks) * result.blockBytes,
         blockBytes: result.blockBytes,
-        isPoolFull: result.peakBlocks >= POOL_BLOCKS,
+        isPoolFull: result.peakBlocks >= poolBlocks,
         callCount: result.callCount,
         readCount: result.readCount,
         crashed: result.crashed,
@@ -110,13 +110,13 @@ function parse(run) {
     };
 }
 
-async function runInEspruino(directory, scriptFile, sim, isComparing) {
-    const scenarioFile = path.join(directory, isComparing ? 'compare.js' : 'measure.js');
-    fs.writeFileSync(scenarioFile, 'var __scenario = ' + JSON.stringify(scenarioOf(sim, isComparing)) + ';\n');
-    return parse(await runBinary([scenarioFile, SIMULATED_DEVICE, scriptFile, ONE_CYCLE]));
+async function runInEspruino(directory, scriptFile, sim, run) {
+    const scenarioFile = path.join(directory, run.isComparing ? 'compare.js' : 'measure.js');
+    fs.writeFileSync(scenarioFile, 'var __scenario = ' + JSON.stringify(scenarioOf(sim, run.isComparing)) + ';\n');
+    return parse(await runBinary([scenarioFile, SIMULATED_DEVICE, scriptFile, ONE_CYCLE], run.poolBlocks), run.poolBlocks);
 }
 
-async function measure(caseOptions) {
+async function measure(caseOptions, poolBlocks = POOL_BLOCKS) {
     const sim = runInNode(caseOptions);
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'shelly-espruino-'));
     try {
@@ -125,8 +125,8 @@ async function measure(caseOptions) {
             scriptFile = path.join(directory, 'script.js');
             fs.writeFileSync(scriptFile, caseOptions.code + '\n');
         }
-        const measured = await runInEspruino(directory, scriptFile, sim, false);
-        const compared = await runInEspruino(directory, scriptFile, sim, true);
+        const measured = await runInEspruino(directory, scriptFile, sim, { isComparing: false, poolBlocks });
+        const compared = await runInEspruino(directory, scriptFile, sim, { isComparing: true, poolBlocks });
         return Object.assign(measured, {
             differencesFromNode: measured.deviceErrors.concat(compared.deviceErrors),
             callsInNode: sim.calls.length,

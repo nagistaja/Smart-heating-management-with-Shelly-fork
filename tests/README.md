@@ -108,7 +108,7 @@ tests/espruino/build-espruino.sh
 npm run test:memory
 ```
 
-The memory test runs one calculation of the script in Espruino, the interpreter the Shelly script engine is built on, and reads how much of the engine's memory the script takes. `npm test` does not run it. It takes about a minute, nearly all of it for the one case with a timer that fires 8571 times.
+The memory test runs one calculation of the script in Espruino, the interpreter the Shelly script engine is built on, and reads how much of the engine's memory the script takes. `npm test` does not run it. It takes about half a minute, most of it for the one case with a timer that fires 8571 times.
 
 | File | What it is |
 |---|---|
@@ -152,7 +152,7 @@ In the peak that part depends on where the script is when it reaches the peak. T
 
 So the simulated device adds nothing while the script loads, about 0.3 kB in a timer callback and about 0.4 kB in the callback of an RPC call, where the answer is a part of it. While the script calls into the device it adds about 0.5 kB more in `Timer.set` and about 0.6 kB more in a configuration read, of which the answer is about 0.1 kB. `Shelly.call` is a function of the simulated device in the same way. Version 4.9 reaches its peak in the callback of the Elering answer. The peaks of two versions can be compared when both reach it in the same kind of place. When a change moves work between loading, callbacks and calls to the device, up to about 1 kB of the difference can come from the simulated device, and the change has to be measured on a device.
 
-The memory Espruino gets for the test is 5000 blocks, far more than a device has, so a case never fails for lack of memory.
+The memory Espruino gets for the test is 5000 blocks, far more than a device has, so a case never fails for lack of memory. The case with the timer that fires 8571 times gets 1000 blocks: the counter of the peak walks through the whole memory at every allocation, and with 5000 blocks that case alone takes a minute.
 
 In Espruino the script must make the same RPC calls and reads in the same order as in Node. The second run in Espruino also compares the parameters of every call and the arguments of every read with the Node run and reports a difference. One value is left out of that: `LastCalculation` in `SmartHeatingSys`, a date text the two engines write differently. Espruino also writes a number with at most 11 decimal places, 1/3 as `0.33333333333`, and text outside ASCII byte by byte. A number that needs more places or such a text in the parameters of a call is therefore reported as a difference. Version 4.9 sends neither in KVS mode.
 

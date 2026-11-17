@@ -7,6 +7,7 @@ const { createShelly } = require('../harness');
 const {
     DEFAULT_CONF, STORAGE_TANK_CONF, HOT_WATER_CONF,
     NORMAL_DAY, HOT_WATER_DAY, NEGATIVE_DAY, SPRING_DST_DAY, AUTUMN_DST_DAY,
+    CYCLE_SECONDS, MILLISECONDS_PER_SECOND,
 } = require('../settings');
 
 const DEVICE_BLOCK_BYTES = 14;
@@ -35,15 +36,18 @@ const EMPTY_SCRIPT = { code: '', peakBytes: 280, retainedBytes: 84 };
 const EMPTY_FUNCTION = 'function tick() {}';
 const ONE_TIMER = ' Timer.set(1000, false, tick);';
 const ONE_PENDING_TIMER = ' Timer.set(3600000, false, tick);';
-const TIMER_THAT_FIRES_8571_TIMES = ' Timer.set(14, true, tick);';
 const ONE_RPC_ANSWER = " Shelly.call('KVS.Get', { key: 'missing' }, tick);";
 const EMPTY_FUNCTION_RETAINED_BYTES = 112;
 const SCRIPTS_THAT_KEEP_NO_MORE = [
     ['five timers that have fired', EMPTY_FUNCTION + ONE_TIMER.repeat(5)],
     ['three pending timers', EMPTY_FUNCTION + ONE_PENDING_TIMER.repeat(3)],
     ['three RPC answers', EMPTY_FUNCTION + ONE_RPC_ANSWER.repeat(3)],
-    ['a timer that fires 8571 times, more than the 8191 a number reaches without a block of its own', EMPTY_FUNCTION + TIMER_THAT_FIRES_8571_TIMES],
 ];
+const LARGEST_NUMBER_WITHOUT_A_BLOCK = 8191;
+const FAST_TIMER_MS = 14;
+const FAST_TIMER_FIRES = Math.floor(CYCLE_SECONDS * MILLISECONDS_PER_SECOND / FAST_TIMER_MS);
+const FAST_TIMER = ` Timer.set(${FAST_TIMER_MS}, true, tick);`;
+const FAST_TIMER_POOL_BLOCKS = 1000;
 const OWN_SHARE = { code: EMPTY_FUNCTION + ONE_TIMER + ONE_RPC_ANSWER, peakBytes: 532, retainedBytes: 112 };
 
 const NO_DEVICE_CALL = '';
@@ -151,6 +155,13 @@ describe('the simulated device in Espruino', { concurrency: true }, () => {
             assert.equal(measured.retainedBytes, EMPTY_FUNCTION_RETAINED_BYTES);
         });
     }
+
+    it(`adds nothing to what an empty function retains for a timer that fires ${FAST_TIMER_FIRES} times`, async () => {
+        assert.ok(FAST_TIMER_FIRES > LARGEST_NUMBER_WITHOUT_A_BLOCK, 'the timer must fire more often than a number counts without a block of its own');
+        const measured = await measure({ code: EMPTY_FUNCTION + FAST_TIMER }, FAST_TIMER_POOL_BLOCKS);
+        assertSameRunAsInNode(measured);
+        assert.equal(measured.retainedBytes, EMPTY_FUNCTION_RETAINED_BYTES);
+    });
 
     it('adds its own share to a script with one timer and one RPC answer', async () => {
         const measured = await measure({ code: OWN_SHARE.code });
