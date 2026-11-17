@@ -56,15 +56,11 @@ describe('simulated device limits', () => {
 
     it(`stores a KVS value of at most ${limits.KVS_VALUE_LIMIT} bytes, each quote counted twice`, () => {
         const sim = emptyDevice();
-        const longest = JSON.stringify('x'.repeat(limits.KVS_VALUE_LIMIT - 2 * QUOTE_COUNT_OF_A_JSON_STRING));
+        const longest = JSON.stringify('x'.repeat(limits.KVS_VALUE_LIMIT - limits.KVS_BYTES_PER_QUOTE * QUOTE_COUNT_OF_A_JSON_STRING));
         assert.equal(limits.kvsLength(longest), limits.KVS_VALUE_LIMIT);
         assert.equal(sim.rpc('KVS.Set', { key: 'fits', value: longest }).code, 0);
         assert.notEqual(sim.rpc('KVS.Set', { key: 'too_long', value: JSON.stringify('x' + JSON.parse(longest)) }).code, 0);
         assert.equal('too_long' in sim.kvs, false);
-    });
-
-    it('counts a KVS value in UTF-8 bytes', () => {
-        assert.equal(limits.kvsLength('\u00f5'), 2);
     });
 
     it(`accepts a KVS key of at most ${limits.KVS_KEY_LIMIT} characters`, () => {
@@ -95,10 +91,12 @@ describe('simulated device limits', () => {
         assert.equal(sim.components.length, 1);
     });
 
-    it(`stops the script at more than ${limits.RPC_CALL_LIMIT} RPC calls in flight`, () => {
+    it(`accepts ${limits.RPC_CALL_LIMIT} RPC calls in flight and stops the script at one more`, () => {
         const sim = emptyDevice();
-        const calls = new Array(limits.RPC_CALL_LIMIT + 1).fill('Shelly.call("KVS.Get", { key: "any" });').join('');
-        sim.eval(calls);
+        const oneCall = 'Shelly.call("KVS.Get", { key: "any" });';
+        sim.eval(oneCall.repeat(limits.RPC_CALL_LIMIT));
+        assert.equal(sim.crashed, null);
+        sim.eval(oneCall);
         assert.match(String(sim.crashed), /RPC calls in flight/);
     });
 

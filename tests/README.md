@@ -20,9 +20,16 @@ Node 22 or newer, no dependencies. `node --test` and running one file work as we
 | `settings.js` | Configurations, days and device types shared by the tests. |
 | `fixtures/` | Elering price answers (15 minute prices, `fields=ee`) and an Open-Meteo forecast, downloaded from the real services. |
 
-The Elering files are ISO-8859-1, as Elering serves them, and must stay so. Each file covers the planned day and a few hours around it. The simulation answers a request with the rows from `start` to `end`, both included, as Elering does.
+The Elering files are ISO-8859-1, as Elering serves them. The only character outside ASCII is in the header line, which the script skips. Each file covers the planned day and a few hours around it. The simulation answers a request with the rows from `start` to `end`, both included. Elering does the same, checked against the live service with the address the script builds: one day gives 97 rows. The 25 hour day is planned from prices only because of that last row.
 
-The tests pin what the script does today, also where that differs from the price list. `oracle.js` follows the price list, so one case is pinned without it: on a winter weekend morning the script charges the weekday peak rate. The network fee tests call `fFee` and set `_.prov` and `c.pack` inside the script, because the fee has no other way out of it.
+The tests pin what the script does today, also where that differs from the price list or the calendar. `oracle.js` follows the price list and the calendar day, so these cases are pinned with literal values, without it:
+
+- On a winter weekend morning the script charges the weekday peak rate.
+- Imatra summer or winter hours follow the clock of the device, not the hour being priced.
+- The plan of the 23 hour day 2026-03-29 contains hour 0 of the next day.
+- Without a period, the first quarter of the next day counts as hour 0.
+
+The network fee tests call `fFee` and set `_.prov` and `c.pack` inside the script, because the fee has no other way out of it.
 
 ## Options of `createShelly`
 
@@ -33,7 +40,7 @@ The tests pin what the script does today, also where that differs from the price
 | `schedules` | Schedules at start, `{ id: { timespec, calls } }` |
 | `components` | Virtual components at start, `[{ key, status: { value }, config }]` |
 | `elering` | Price fixture |
-| `temps` | Forecast temperatures instead of the fixture |
+| `temperatures` | Forecast temperatures instead of the fixture |
 | `httpFail` | RegExp of URLs whose `HTTP.GET` fails |
 | `deviceInfo` | Result of `Shelly.getDeviceInfo()` |
 | `scripts`, `scriptId` | Scripts on the device, `[{ id, name, running, enable }]`, and the ID of the running one |
@@ -49,17 +56,19 @@ The tests pin what the script does today, also where that differs from the price
 | Calls in one schedule | 5 | Shelly docs, Schedule |
 | Virtual components per device, the group included | 10 | Shelly docs, Virtual: "a limit of 10 instances per device". That the group counts is taken from the discussion of pull request #11, not measured. |
 | Virtual component ID | 200 to 299, each ID once per component type | Shelly docs, Virtual |
-| KVS value | 253 bytes, every `"` counted twice | Shelly docs, KVS, for 253. The double count was measured on a Shelly Plus 1PM: "length should be less than 255". |
-| KVS key | 42 characters | Shelly docs, KVS |
+| KVS value | 253, every `"` counted twice | Shelly docs, KVS, give 253 without a unit. The double count was measured on a Shelly Plus 1PM: "length should be less than 255". Counting other characters in UTF-8 bytes is assumed. |
+| KVS key | 42 characters | Shelly docs, KVS, give 42 without a unit |
 | KVS keys per device | 50 | Shelly docs, KVS |
 | `KVS.Get` of a missing key | `-105` | Measured on a Shelly Plus 1PM, firmware 1.7.6 |
 | `Schedule.Delete` of a missing ID | `-103` | Device log in the discussion of pull request #11 |
 | `Schedule.Update` of a missing ID | `-105` | Device log in the discussion of pull request #11 |
-| ID of a new schedule | the lowest free one | Seen on devices, not documented |
+| ID of a new schedule | the lowest free one | Device log in the discussion of pull request #11: the ID of a deleted schedule was given to the next one |
 | `Script.Start`, `Script.Stop` | answer `{ was_running }` | Shelly docs, Script |
 | Autostart of a script made by `Script.Create` | off | Assumed. The Shelly docs give no default. |
+| ID of a script made by `Script.Create` | the highest existing ID plus one | Assumed |
+| `HTTP.GET` answer | Elering in `body_b64`, Open-Meteo in `body` | Shelly docs, HTTP: `body` for text and JSON, `body_b64` for binary data. Elering answers with `application/octet-stream`. |
 
-The simulated devices report firmware 1.7.6.
+The simulated devices are a Shelly Plus 1PM (Gen2, KVS mode), a Shelly Pro 1PM (Gen2, Virtual Component mode) and a Shelly 1PM Gen3 (Virtual Component mode). All three report firmware 1.7.6.
 
 ### Assumed error codes
 
@@ -69,7 +78,7 @@ No source gives an error code for these cases. The simulation answers all of the
 - A virtual component ID that is taken or out of range, and `Virtual.Delete` of a missing component.
 - An `HTTP.GET` that fails.
 
-More than 5 RPC calls in flight, more than 5 active timers, a run that never comes to rest and an exception in the script end a test with `sim.crashed` set. What the device itself does at the first two is not documented. An RPC method the simulation does not know throws an error instead of answering.
+More than 5 RPC calls in flight, more than 5 active timers, a run that never comes to rest and an exception in a timer or RPC callback end a test with `sim.crashed` set. What the device itself does at the first two is not documented. An exception while the script loads fails the test directly, and so does an RPC method the simulation does not know.
 
 ## What is not simulated
 
@@ -77,7 +86,7 @@ A passing test does not prove these. They need a real device.
 
 - The script engine. Node accepts JavaScript that the engine of the device does not.
 - Memory use and the size of the script.
-- The call stack of the engine. A Shelly Plus 1PM stopped a script at about five nested calls.
+- The call stack of the engine. A Shelly Plus 1PM stopped a script at about five nested calls (seen in November 2026, firmware not recorded).
 - Time taken by RPC and HTTP answers. Every answer arrives in the same simulated millisecond, so the limit of 5 calls only counts calls sent before the script yields. Calls that overlap over time on a device are not counted.
 - Schedules firing. A schedule is stored but never runs, and the relay is never switched. Heating time is worked out from the timespec and the auto-off delay.
 - Random delays. `Math.random()` always returns 0, so the delay of the Elering request and the start jitter never happen.

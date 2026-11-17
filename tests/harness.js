@@ -4,7 +4,10 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const limits = require('./limits');
-const { DEVICE_TIME_ZONE, NORMAL_DAY, GEN2_DEVICE, HEATING_SCRIPT_ID, WATCHDOG_SCRIPT_ID } = require('./settings');
+const {
+    DEVICE_TIME_ZONE, NORMAL_DAY, GEN2_DEVICE, HEATING_SCRIPT_ID, WATCHDOG_SCRIPT_ID, HEATING_SCRIPT_ENTRY,
+    MILLISECONDS_PER_SECOND, SECONDS_PER_MINUTE, MINUTES_PER_HOUR, HOURS_PER_DAY, RELAY_OVERLAP_SECONDS,
+} = require('./settings');
 
 process.env.TZ = DEVICE_TIME_ZONE;
 
@@ -15,9 +18,7 @@ const FORECAST_FIXTURE = 'open-meteo-24h.json';
 const ELERING_ENCODING = 'latin1';
 const STEP_LIMIT = 100000;
 const WATCHDOG_RUN_SECONDS = 10;
-const MINUTES_PER_DAY = 24 * 60;
-const SECONDS_PER_MINUTE = 60;
-const RELAY_OVERLAP_SECONDS = 10;
+const MINUTES_PER_DAY = HOURS_PER_DAY * MINUTES_PER_HOUR;
 const LOCATION = { lat: 59.437, lon: 24.7536 };
 const FAKE_CLOCK = `
     (function () {
@@ -92,7 +93,7 @@ function runTask(sim, task) {
 }
 
 function runFor(sim, seconds) {
-    const untilMs = sim.nowMs + seconds * 1000;
+    const untilMs = sim.nowMs + seconds * MILLISECONDS_PER_SECOND;
     let steps = 0;
     for (let task = nextDueTask(sim, untilMs); task && !sim.crashed; task = nextDueTask(sim, untilMs)) {
         steps++;
@@ -141,7 +142,7 @@ function scheduleDelete(sim, params) {
 function scheduleUpdate(sim, params) {
     const job = sim.schedules.get(params.id);
     if (!job) return failed(limits.ERR_NOT_FOUND, 'Argument \'id\' not found!');
-    Object.assign(job, params);
+    Object.assign(job, clone(params));
     return ok({ rev: 1 });
 }
 
@@ -151,7 +152,7 @@ function virtualAdd(sim, params) {
     if (!isIdInRange) return failed(limits.ERR_ASSUMED, 'Id out of range');
     if (sim.components.some((component) => component.key === key)) return failed(limits.ERR_ASSUMED, 'Id not available');
     if (sim.components.length >= limits.VIRTUAL_COMPONENT_LIMIT) return failed(limits.ERR_ASSUMED, 'Too many virtual components');
-    sim.components.push({ key, status: { value: params.config.default_value }, config: params.config });
+    sim.components.push({ key, status: { value: params.config.default_value }, config: clone(params.config) });
     return ok({ id: params.id });
 }
 
@@ -167,7 +168,7 @@ function getComponents(sim) {
 }
 
 function groupSet(sim, params) {
-    sim.group = params.value;
+    sim.group = clone(params.value);
     return ok(null);
 }
 
@@ -178,8 +179,8 @@ function switchSetConfig(sim, params) {
 
 function eleringAnswer(sim, url) {
     const query = new URL(url).searchParams;
-    const start = Date.parse(query.get('start')) / 1000;
-    const end = Date.parse(query.get('end')) / 1000;
+    const start = Date.parse(query.get('start')) / MILLISECONDS_PER_SECOND;
+    const end = Date.parse(query.get('end')) / MILLISECONDS_PER_SECOND;
     const lines = sim.prices.rows.filter((row) => row.timestamp >= start && row.timestamp <= end).map((row) => row.line);
     const body = [sim.prices.header].concat(lines).join('\n') + '\n';
     return { code: 200, body_b64: Buffer.from(body, ELERING_ENCODING).toString('base64') };
@@ -214,13 +215,17 @@ function scriptPutCode(sim, params) {
     return ok({ len: params.code.length });
 }
 
+function scriptById(sim, id) {
+    return sim.scripts.find((script) => script.id === id);
+}
+
 function scriptSetConfig(sim, params) {
-    Object.assign(sim.scripts.find((script) => script.id === params.id), params.config);
+    Object.assign(scriptById(sim, params.id), params.config);
     return ok({ restart_required: false });
 }
 
 function setScriptRunning(sim, params, isRunning) {
-    const script = sim.scripts.find((entry) => entry.id === params.id);
+    const script = scriptById(sim, params.id);
     const wasRunning = script.running;
     script.running = isRunning;
     return ok({ was_running: wasRunning });
@@ -255,9 +260,12 @@ function answerOf(sim, method, params) {
 function shellyApi(sim) {
     return {
         call(method, params, callback, userdata) {
+            if (sim.callsInFlight >= limits.RPC_CALL_LIMIT) {
+                crash(sim, `more than ${limits.RPC_CALL_LIMIT} RPC calls in flight (${method})`);
+                return;
+            }
             sim.calls.push({ method, params: params ? clone(params) : params });
             const [result, code, message] = answerOf(sim, method, params);
-            if (sim.callsInFlight >= limits.RPC_CALL_LIMIT) crash(sim, `more than ${limits.RPC_CALL_LIMIT} RPC calls in flight (${method})`);
             sim.callsInFlight++;
             addTask(sim, sim.nowMs, () => {
                 sim.callsInFlight--;
@@ -265,12 +273,12 @@ function shellyApi(sim) {
             });
         },
         getComponentStatus(type) {
-            if (type === 'sys') return { unixtime: Math.floor(sim.nowMs / 1000) };
+            if (type === 'sys') return { unixtime: Math.floor(sim.nowMs / MILLISECONDS_PER_SECOND) };
             return { mem_used: 0, mem_peak: 0 };
         },
         getComponentConfig(type, id) {
             if (type === 'sys') return { location: Object.assign({}, LOCATION) };
-            return { enable: sim.scripts.find((script) => script.id === id).enable };
+            return { enable: scriptById(sim, id).enable };
         },
         getDeviceInfo: () => Object.assign({}, sim.deviceInfo),
         getCurrentScriptId: () => sim.scriptId,
@@ -311,28 +319,28 @@ function heatingMinutes(sim) {
         const fields = job.timespec.split(' ');
         const startMinute = Number(fields[1]);
         for (const hour of fields[2].split(',').map(Number)) {
-            for (let i = 0; i < minutesPerStart; i++) minutesOn.add((hour * 60 + startMinute + i) % MINUTES_PER_DAY);
+            for (let i = 0; i < minutesPerStart; i++) minutesOn.add((hour * MINUTES_PER_HOUR + startMinute + i) % MINUTES_PER_DAY);
         }
     }
     return minutesOn.size;
 }
 
-function initialState(settings) {
+function initialState(deviceOptions) {
     const schedules = new Map();
-    for (const id of Object.keys(settings.schedules)) {
-        schedules.set(Number(id), Object.assign({ enable: true }, settings.schedules[id]));
+    for (const id of Object.keys(deviceOptions.schedules)) {
+        schedules.set(Number(id), Object.assign({ enable: true }, clone(deviceOptions.schedules[id])));
     }
     return {
-        nowMs: Date.parse(settings.now),
-        kvs: Object.assign({}, settings.kvs),
+        nowMs: Date.parse(deviceOptions.now),
+        kvs: Object.assign({}, deviceOptions.kvs),
         schedules,
-        components: clone(settings.components),
-        scripts: clone(settings.scripts),
-        scriptId: settings.scriptId,
-        deviceInfo: settings.deviceInfo,
-        prices: eleringRows(settings.elering),
-        temperatures: settings.temps || forecastTemperatures(),
-        httpFail: settings.httpFail,
+        components: clone(deviceOptions.components),
+        scripts: clone(deviceOptions.scripts),
+        scriptId: deviceOptions.scriptId,
+        deviceInfo: deviceOptions.deviceInfo,
+        prices: eleringRows(deviceOptions.elering),
+        temperatures: deviceOptions.temperatures || forecastTemperatures(),
+        httpFail: deviceOptions.httpFail,
         scriptCode: {},
         switchConfig: {},
         group: null,
@@ -350,20 +358,20 @@ function initialState(settings) {
 }
 
 function createShelly(options) {
-    const settings = Object.assign({
+    const deviceOptions = Object.assign({
         now: NORMAL_DAY.now,
         kvs: {},
         schedules: {},
         components: [],
         elering: NORMAL_DAY.fixture,
-        temps: null,
+        temperatures: null,
         httpFail: null,
         code: null,
-        scripts: [{ id: HEATING_SCRIPT_ID, name: 'Smart Heating', running: true, enable: true }],
+        scripts: [HEATING_SCRIPT_ENTRY],
         scriptId: HEATING_SCRIPT_ID,
         deviceInfo: GEN2_DEVICE,
     }, options);
-    const sim = initialState(settings);
+    const sim = initialState(deviceOptions);
     const shelly = shellyApi(sim);
     const timer = timerApi(sim);
     const log = (...parts) => sim.logs.push(parts.map(String).join(' '));
@@ -379,7 +387,7 @@ function createShelly(options) {
 
     sim.eval = (code) => vm.runInContext(code, context);
     sim.load = () => {
-        sim.eval(settings.code === null ? fs.readFileSync(HEATING_SCRIPT, 'utf8') : settings.code);
+        sim.eval(deviceOptions.code === null ? fs.readFileSync(HEATING_SCRIPT, 'utf8') : deviceOptions.code);
         return sim;
     };
     sim.runFor = (seconds) => {
@@ -396,7 +404,7 @@ function createShelly(options) {
     sim.emitStatus = (status) => sim.statusHandlers.forEach((handler) => handler(status));
     sim.heatingMinutes = () => heatingMinutes(sim);
     sim.timespecs = () => [...sim.schedules.values()].map((job) => job.timespec).sort();
-    sim.json = (key) => JSON.parse(sim.kvs[key]);
+    sim.storedJson = (key) => JSON.parse(sim.kvs[key]);
     return sim;
 }
 

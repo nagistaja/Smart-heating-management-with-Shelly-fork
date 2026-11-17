@@ -1,6 +1,7 @@
 'use strict';
 
 const { eleringRows } = require('./harness');
+const { MILLISECONDS_PER_SECOND, HOURS_PER_DAY } = require('./settings');
 
 const ELEKTRILEVI_RATES = {
     VORK2: { dayRate: 60.7, nightRate: 35.1, dayPeakRate: 60.7, holidayPeakRate: 35.1 },
@@ -14,7 +15,6 @@ const SATURDAY = 6;
 const DAY_RATE_HOURS = { from: 7, until: 22 };
 const MORNING_PEAK_HOURS = { from: 9, until: 12 };
 const EVENING_PEAK_HOURS = { from: 16, until: 20 };
-const HOURS_PER_DAY = 24;
 const CENTS_PER_EURO = 100;
 
 function isWithin(hour, hours) {
@@ -23,7 +23,7 @@ function isWithin(hour, hours) {
 
 function elektrileviFee(timestamp, packageName) {
     const rates = ELEKTRILEVI_RATES[packageName];
-    const date = new Date(timestamp * 1000);
+    const date = new Date(timestamp * MILLISECONDS_PER_SECOND);
     const hour = date.getHours();
     const isWinter = date.getMonth() >= NOVEMBER_MONTH_INDEX || date.getMonth() <= MARCH_MONTH_INDEX;
     const isWeekend = date.getDay() === SATURDAY || date.getDay() === SUNDAY;
@@ -37,7 +37,7 @@ function elektrileviFee(timestamp, packageName) {
 
 function localMidnight(isoDate, dayOffset) {
     const [year, month, day] = isoDate.split('-').map(Number);
-    return new Date(year, month - 1, day + dayOffset).getTime() / 1000;
+    return new Date(year, month - 1, day + dayOffset).getTime() / MILLISECONDS_PER_SECOND;
 }
 
 function hourlyPrices(fixture, isoDate, packageName) {
@@ -46,7 +46,7 @@ function hourlyPrices(fixture, isoDate, packageName) {
     const quarters = eleringRows(fixture).rows.filter((row) => row.timestamp >= dayStart && row.timestamp < dayEnd);
     const hours = [];
     for (const quarter of quarters) {
-        const hour = new Date(quarter.timestamp * 1000).getHours();
+        const hour = new Date(quarter.timestamp * MILLISECONDS_PER_SECOND).getHours();
         const last = hours[hours.length - 1];
         if (last && last.hour === hour) {
             last.sum += quarter.price;

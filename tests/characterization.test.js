@@ -9,31 +9,34 @@ const oracle = require('./oracle');
 const {
     SCRIPT_VERSION, DEFAULT_CONF, STORAGE_TANK_CONF, HOT_WATER_CONF,
     NORMAL_DAY, HOT_WATER_DAY, NEGATIVE_DAY, SPRING_DST_DAY, AUTUMN_DST_DAY,
-    HEATING_SCRIPT_ID, WATCHDOG_SCRIPT_ID, GEN3_DEVICE,
+    HEATING_SCRIPT_ID, WATCHDOG_SCRIPT_ID, HEATING_SCRIPT_ENTRY, GEN2_PRO_DEVICE, GEN3_DEVICE,
+    MILLISECONDS_PER_SECOND, SECONDS_PER_MINUTE, MINUTES_PER_HOUR, HOURS_PER_DAY, RELAY_OVERLAP_SECONDS,
 } = require('./settings');
 
 const CYCLE_SECONDS = 120;
-const MINUTES_PER_HOUR = 60;
-const HOUR_AND_OVERLAP_SECONDS = 3610;
+const RELAY_DELAY_SECONDS = MINUTES_PER_HOUR * SECONDS_PER_MINUTE + RELAY_OVERLAP_SECONDS;
 const FALLBACK_LOG = 'Internet error';
 const GROUP_MEMBER_COUNT = 9;
 const OWN_COMPONENT_COUNT = GROUP_MEMBER_COUNT + 1;
-const FORECAST_OF_8_HOURS = new Array(24).fill(-4);
-const FORECAST_OF_7_AND_A_HALF_HOURS = new Array(24).fill(-3);
+const GROUP_KEY = 'group:200';
+const VERSION_BEFORE_VIRTUAL_COMPONENTS = 4.1;
+const FORECAST_OF_8_HOURS = new Array(HOURS_PER_DAY).fill(-4);
+const FORECAST_OF_7_AND_A_HALF_HOURS = new Array(HOURS_PER_DAY).fill(-3);
 const SWITCH_ON = [{ method: 'Switch.Set', params: { id: 0, on: true } }];
 const SWITCH_OFF = [{ method: 'Switch.Set', params: { id: 0, on: false } }];
 const HISTORICALLY_CHEAP_HOURS = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
 const MIDDAY_OF_NORMAL_DAY = '2026-10-07T12:00:00+03:00';
+const LAST_HOUR_BEFORE_TOMORROWS_PRICES = '2026-10-07T22:50:00+03:00';
 const PRICES_OF_NORMAL_DAY = 'https://dashboard.elering.ee/api/nps/price/csv?fields=ee&start=2026-10-06T21:00Z&end=2026-10-07T21:00Z';
 const RUNNING_WATCHDOG = { id: WATCHDOG_SCRIPT_ID, name: 'watchdog', running: true, enable: true };
-const HEATING_SCRIPT_ENTRY = { id: HEATING_SCRIPT_ID, name: 'Smart Heating', running: true, enable: true };
+const HEATING_SCRIPT_WITHOUT_AUTOSTART = Object.assign({}, HEATING_SCRIPT_ENTRY, { enable: false });
 
 function kvsWith(conf) {
     return { SmartHeatingConf1: JSON.stringify(Object.assign({}, DEFAULT_CONF, conf)) };
 }
 
-function systemData(scheduleId) {
-    return JSON.stringify({ LastCalculation: 'x', ExistingSchedule: scheduleId, Version: SCRIPT_VERSION });
+function systemData(scheduleId, version) {
+    return JSON.stringify({ LastCalculation: 'x', ExistingSchedule: scheduleId, Version: version || SCRIPT_VERSION });
 }
 
 function run(options) {
@@ -61,6 +64,10 @@ function hasFallenBack(sim) {
     return sim.logs.some((line) => line.indexOf(FALLBACK_LOG) >= 0);
 }
 
+function hasLogged(sim, text) {
+    return sim.logs.some((line) => line.indexOf(text) >= 0);
+}
+
 function callIndex(sim, method) {
     return sim.calls.findIndex((call) => call.method === method);
 }
@@ -69,20 +76,24 @@ function hasCalled(sim, method, id) {
     return sim.calls.some((call) => call.method === method && call.params.id === id);
 }
 
+function epochSeconds(isoTime) {
+    return Date.parse(isoTime) / MILLISECONDS_PER_SECOND;
+}
+
 describe('settings in KVS', () => {
     it('writes all eleven settings on first install', () => {
         const sim = run({});
-        assert.deepEqual(sim.json('SmartHeatingConf1'), DEFAULT_CONF);
+        assert.deepEqual(sim.storedJson('SmartHeatingConf1'), DEFAULT_CONF);
     });
 
     it('keeps the stored settings unchanged', () => {
         const sim = run({ kvs: { SmartHeatingConf1: JSON.stringify(STORAGE_TANK_CONF) } });
-        assert.deepEqual(sim.json('SmartHeatingConf1'), STORAGE_TANK_CONF);
+        assert.deepEqual(sim.storedJson('SmartHeatingConf1'), STORAGE_TANK_CONF);
     });
 
     it('stores one schedule ID and the version in SmartHeatingSys', () => {
         const sim = run({ kvs: kvsWith({}) });
-        const stored = sim.json('SmartHeatingSys1');
+        const stored = sim.storedJson('SmartHeatingSys1');
         assert.equal(stored.ExistingSchedule, [...sim.schedules.keys()][0]);
         assert.equal(stored.Version, SCRIPT_VERSION);
     });
@@ -97,19 +108,36 @@ describe('heating time', () => {
     for (const [period, hours] of [[12, 3], [6, 2]]) {
         it(`heats HeatingTime hours in each ${period} h period`, () => {
             const sim = run({ kvs: kvsWith({ TimePeriod: period, HeatingTime: hours }) });
-            assert.equal(sim.heatingMinutes(), (24 / period) * hours * MINUTES_PER_HOUR);
+            assert.equal(sim.heatingMinutes(), (HOURS_PER_DAY / period) * hours * MINUTES_PER_HOUR);
         });
     }
 
     it('derives the heating hours from the weather forecast', () => {
-        const sim = run({ kvs: kvsWith({ IsForecastUsed: true }), temps: FORECAST_OF_8_HOURS });
+        const sim = run({ kvs: kvsWith({ IsForecastUsed: true }), temperatures: FORECAST_OF_8_HOURS });
         assert.equal(sim.heatingMinutes(), 8 * MINUTES_PER_HOUR);
         assert.ok(sim.httpRequests[0].indexOf('forecast_hours=24') > 0);
     });
 
     it('rounds the forecast heating time down to whole hours', () => {
-        const sim = run({ kvs: kvsWith({ IsForecastUsed: true }), temps: FORECAST_OF_7_AND_A_HALF_HOURS });
+        const sim = run({ kvs: kvsWith({ IsForecastUsed: true }), temperatures: FORECAST_OF_7_AND_A_HALF_HOURS });
         assert.equal(sim.heatingMinutes(), 7 * MINUTES_PER_HOUR);
+    });
+
+    it('adds four hours to the forecast heating time with HeatingCurve 2', () => {
+        const sim = run({ kvs: kvsWith({ IsForecastUsed: true, HeatingCurve: 2 }), temperatures: FORECAST_OF_8_HOURS });
+        assert.equal(sim.heatingMinutes(), 12 * MINUTES_PER_HOUR);
+    });
+
+    it('plans only the coming 12 h period from a 12 hour forecast', () => {
+        const sim = run({ kvs: kvsWith({ IsForecastUsed: true, TimePeriod: 12 }), temperatures: FORECAST_OF_8_HOURS });
+        assert.ok(sim.httpRequests[0].indexOf('forecast_hours=12') > 0);
+        assert.deepEqual(sim.timespecs(), hourlyTimespec([0, 1, 2, 3]));
+    });
+
+    it('plans one hour for the storage tank from the downloaded forecast', () => {
+        const sim = run({ kvs: { SmartHeatingConf1: JSON.stringify(STORAGE_TANK_CONF) } });
+        assert.equal(sim.httpRequests.length, 2);
+        assert.deepEqual(sim.timespecs(), hourlyTimespec([3]));
     });
 });
 
@@ -117,7 +145,7 @@ describe('relay', () => {
     it('is switched on by the schedule and off one hour and ten seconds later', () => {
         const sim = run({ kvs: kvsWith({}) });
         assert.deepEqual(sim.switchConfig, {
-            auto_on: false, auto_on_delay: HOUR_AND_OVERLAP_SECONDS, auto_off: true, auto_off_delay: HOUR_AND_OVERLAP_SECONDS,
+            auto_on: false, auto_on_delay: RELAY_DELAY_SECONDS, auto_off: true, auto_off_delay: RELAY_DELAY_SECONDS,
         });
         assert.deepEqual([...sim.schedules.values()][0].calls, SWITCH_ON);
     });
@@ -125,7 +153,7 @@ describe('relay', () => {
     it('is switched off by the schedule and on again later with InvertedRelay', () => {
         const sim = run({ kvs: kvsWith({ InvertedRelay: true }) });
         assert.deepEqual(sim.switchConfig, {
-            auto_on: true, auto_on_delay: HOUR_AND_OVERLAP_SECONDS, auto_off: false, auto_off_delay: HOUR_AND_OVERLAP_SECONDS,
+            auto_on: true, auto_on_delay: RELAY_DELAY_SECONDS, auto_off: false, auto_off_delay: RELAY_DELAY_SECONDS,
         });
         assert.deepEqual([...sim.schedules.values()][0].calls, SWITCH_OFF);
     });
@@ -150,14 +178,24 @@ describe('hourly planning', () => {
         assert.deepEqual(sim.timespecs(), expectedTimespec(NEGATIVE_DAY, conf));
     });
 
-    it('does not heat when the market price is above AlwaysOffPrice', () => {
-        const sim = run({ kvs: kvsWith({ AlwaysOnPrice: -20, AlwaysOffPrice: -10 }) });
+    it('counts the first quarter of the next day as hour 0 without a period', () => {
+        const sim = run({ kvs: kvsWith({ TimePeriod: 0, AlwaysOnPrice: 2 }), elering: NEGATIVE_DAY.fixture, now: NEGATIVE_DAY.now });
+        assert.deepEqual(sim.timespecs(), hourlyTimespec([0, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18]));
+    });
+
+    it('deletes the schedule and stores an empty schedule ID when every hour is above AlwaysOffPrice', () => {
+        const sim = run({
+            kvs: Object.assign(kvsWith({ AlwaysOnPrice: -20, AlwaysOffPrice: -10 }), { SmartHeatingSys1: systemData(7) }),
+            schedules: { 7: { timespec: '0 0 23 * * *', calls: SWITCH_ON } },
+        });
         assert.equal(sim.schedules.size, 0);
+        assert.equal(sim.storedJson('SmartHeatingSys1').ExistingSchedule, '');
     });
 
     it('reproduces the schedule a hot water device made on 2026-10-08', () => {
         const sim = run({ kvs: { SmartHeatingConf1: JSON.stringify(HOT_WATER_CONF) }, elering: HOT_WATER_DAY.fixture, now: HOT_WATER_DAY.now });
         assert.deepEqual(sim.timespecs(), hourlyTimespec([3, 4, 6, 7, 14, 15, 22, 23]));
+        assert.deepEqual(sim.timespecs(), expectedTimespec(HOT_WATER_DAY, HOT_WATER_CONF));
     });
 
     it("asks Elering for tomorrow's prices in one request after 23:00", () => {
@@ -165,11 +203,13 @@ describe('hourly planning', () => {
         assert.deepEqual(sim.httpRequests, [PRICES_OF_NORMAL_DAY]);
     });
 
-    it("asks Elering for today's prices when started during the day", () => {
-        const sim = run({ kvs: kvsWith({}), now: MIDDAY_OF_NORMAL_DAY });
-        assert.deepEqual(sim.httpRequests, [PRICES_OF_NORMAL_DAY]);
-        assert.deepEqual(sim.timespecs(), expectedTimespec(NORMAL_DAY, {}));
-    });
+    for (const startTime of [MIDDAY_OF_NORMAL_DAY, LAST_HOUR_BEFORE_TOMORROWS_PRICES]) {
+        it(`asks Elering for today's prices when started at ${startTime.slice(11, 16)}`, () => {
+            const sim = run({ kvs: kvsWith({}), now: startTime });
+            assert.deepEqual(sim.httpRequests, [PRICES_OF_NORMAL_DAY]);
+            assert.deepEqual(sim.timespecs(), expectedTimespec(NORMAL_DAY, {}));
+        });
+    }
 
     it('plans the 25 hour day 2025-10-26', () => {
         const sim = run({ kvs: kvsWith({}), elering: AUTUMN_DST_DAY.fixture, now: AUTUMN_DST_DAY.now });
@@ -196,9 +236,12 @@ describe('fallback without prices or forecast', () => {
         assert.deepEqual(sim.timespecs(), hourlyTimespec(HISTORICALLY_CHEAP_HOURS));
     });
 
-    it('heats HeatingTime hours when the forecast is unreachable', () => {
+    it('uses the historically cheap hours without asking Elering when the forecast is unreachable', () => {
         const sim = run({ kvs: kvsWith({ IsForecastUsed: true }), httpFail: /open-meteo/ });
-        assert.equal(sim.heatingMinutes(), DEFAULT_CONF.HeatingTime * MINUTES_PER_HOUR);
+        assert.ok(hasFallenBack(sim));
+        assert.equal(sim.httpRequests.length, 1);
+        assert.ok(sim.httpRequests[0].indexOf('open-meteo') >= 0);
+        assert.deepEqual(sim.timespecs(), hourlyTimespec(HISTORICALLY_CHEAP_HOURS));
     });
 });
 
@@ -217,11 +260,22 @@ describe('schedule bookkeeping', () => {
         const sim = run({ kvs: Object.assign(kvsWith({}), { SmartHeatingSys1: systemData(7) }) });
         assert.ok(hasCalled(sim, 'Schedule.Delete', 7));
         assert.equal(sim.schedules.size, 1);
-        assert.equal(sim.json('SmartHeatingSys1').ExistingSchedule, [...sim.schedules.keys()][0]);
+        assert.equal(sim.storedJson('SmartHeatingSys1').ExistingSchedule, [...sim.schedules.keys()][0]);
     });
 });
 
-describe('watchdog', () => {
+describe('script autostart and watchdog', () => {
+    it('leaves the autostart of the heating script alone when it is on', () => {
+        const sim = run({ kvs: kvsWith({}) });
+        assert.equal(hasCalled(sim, 'Script.SetConfig', HEATING_SCRIPT_ID), false);
+    });
+
+    it('turns the autostart of the heating script on', () => {
+        const sim = run({ kvs: kvsWith({}), scripts: [HEATING_SCRIPT_WITHOUT_AUTOSTART] });
+        assert.ok(hasCalled(sim, 'Script.SetConfig', HEATING_SCRIPT_ID));
+        assert.equal(sim.scripts[0].enable, true);
+    });
+
     it('creates a watchdog script, enables its autostart and starts it', () => {
         const sim = run({ kvs: kvsWith({}) });
         assert.ok(sim.calls.some((call) => call.method === 'Script.Create' && call.params.name === 'watchdog'));
@@ -249,32 +303,66 @@ describe('watchdog', () => {
         const watchdog = runWatchdog(sim, sim.scriptCode[WATCHDOG_SCRIPT_ID], HEATING_SCRIPT_ID);
         assert.equal(watchdog.crashed, null, watchdog.logs.join('\n'));
         assert.equal(sim.schedules.size, 0);
-        assert.equal(sim.json('SmartHeatingSys1').ExistingSchedule, 0);
+        assert.equal(sim.storedJson('SmartHeatingSys1').ExistingSchedule, 0);
     });
 });
 
 describe('Virtual Component mode', () => {
     const virtualComponents = (values) => Object.keys(values).map((key) => ({ key, status: { value: values[key] }, config: {} }));
-    const PERIOD_OF_12_HOURS = {
-        'enum:200': '12', 'number:200': 3, 'boolean:200': false, 'enum:201': 'VORK2', 'number:201': 1,
+    const DEFAULT_VALUES = {
+        'enum:200': '24', 'number:200': 10, 'boolean:200': false, 'enum:201': 'VORK2', 'number:201': 1,
         'number:202': 300, 'boolean:201': false, 'enum:202': 'ee', 'number:203': 0,
     };
+    const PERIOD_OF_12_HOURS = Object.assign({}, DEFAULT_VALUES, { 'enum:200': '12', 'number:200': 3 });
     const FOREIGN_COMPONENTS = virtualComponents({ 'boolean:210': true, 'number:250': 21 });
 
-    it('installs nine components and their group, ten in all, on a fresh device', () => {
+    function valuesOf(sim) {
+        const values = {};
+        for (const component of sim.components) {
+            if (component.key !== GROUP_KEY) values[component.key] = component.status.value;
+        }
+        return values;
+    }
+
+    function hasForeignComponent(sim) {
+        return FOREIGN_COMPONENTS.some((foreign) => sim.components.some((component) => component.key === foreign.key));
+    }
+
+    it('installs nine components with the default settings and their group, ten in all, on a fresh device', () => {
         const sim = run({ deviceInfo: GEN3_DEVICE });
         assert.equal(sim.components.length, OWN_COMPONENT_COUNT);
-        assert.equal(sim.group.length, GROUP_MEMBER_COUNT);
-        assert.equal(sim.schedules.size, 1);
+        assert.deepEqual(valuesOf(sim), DEFAULT_VALUES);
+        assert.deepEqual(sim.group.slice().sort(), Object.keys(DEFAULT_VALUES).sort());
+        assert.deepEqual(sim.timespecs(), expectedTimespec(NORMAL_DAY, {}));
+    });
+
+    it('is used on a Gen2 Pro device as well', () => {
+        const sim = run({ deviceInfo: GEN2_PRO_DEVICE });
+        assert.equal(sim.components.length, OWN_COMPONENT_COUNT);
+        assert.equal('SmartHeatingConf1' in sim.kvs, false);
+    });
+
+    it('gives way to KVS mode on a Gen3 device with ManualKVS', () => {
+        const sim = run({ deviceInfo: GEN3_DEVICE, kvs: kvsWith({ ManualKVS: true }) });
+        assert.ok(hasLogged(sim, 'Script in KVS mode'));
+        assert.equal(sim.components.length, 0);
     });
 
     it('deletes every component already on the device before a clean install', () => {
         const sim = run({ deviceInfo: GEN3_DEVICE, components: FOREIGN_COMPONENTS });
         assert.equal(sim.components.length, OWN_COMPONENT_COUNT);
-        for (const foreign of FOREIGN_COMPONENTS) {
-            assert.equal(sim.components.some((component) => component.key === foreign.key), false);
-        }
-        assert.equal(sim.logs.some((line) => line.indexOf('is not added') >= 0), false);
+        assert.equal(hasForeignComponent(sim), false);
+        assert.equal(hasLogged(sim, 'is not added'), false);
+    });
+
+    it('makes a clean install over an installation older than version 4.2', () => {
+        const sim = run({
+            deviceInfo: GEN3_DEVICE,
+            kvs: { SmartHeatingSys1: systemData(0, VERSION_BEFORE_VIRTUAL_COMPONENTS) },
+            components: FOREIGN_COMPONENTS,
+        });
+        assert.equal(sim.components.length, OWN_COMPONENT_COUNT);
+        assert.equal(hasForeignComponent(sim), false);
     });
 
     it('plans from the component values of an existing installation', () => {
@@ -288,7 +376,7 @@ describe('network fee', () => {
     function feeAt(provider, packageName, pricedTime, clockTime) {
         const sim = createShelly({ now: clockTime || pricedTime }).load();
         sim.eval(`_.prov = "${provider}"; c.pack = pack().${packageName};`);
-        return sim.eval(`fFee(${Date.parse(pricedTime) / 1000})`);
+        return sim.eval(`fFee(${epochSeconds(pricedTime)})`);
     }
 
     const ELEKTRILEVI_CASES = [
@@ -310,7 +398,7 @@ describe('network fee', () => {
     for (const [name, pricedTime, packageName, fee] of ELEKTRILEVI_CASES) {
         it(`Elektrilevi ${name}`, () => {
             assert.equal(feeAt('Elektlevi', packageName, pricedTime), fee);
-            assert.equal(oracle.elektrileviFee(Date.parse(pricedTime) / 1000, packageName), fee);
+            assert.equal(oracle.elektrileviFee(epochSeconds(pricedTime), packageName), fee);
         });
     }
 
