@@ -5,7 +5,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 const limits = require('./limits');
 const {
-    DEVICE_TIME_ZONE, NORMAL_DAY, GEN2_DEVICE, HEATING_SCRIPT_ID, WATCHDOG_SCRIPT_ID, HEATING_SCRIPT_ENTRY,
+    DEVICE_TIME_ZONE, DEVICE_LOCATION, NORMAL_DAY, GEN2_DEVICE, HEATING_SCRIPT_ID, WATCHDOG_SCRIPT_ID, HEATING_SCRIPT_ENTRY,
     MILLISECONDS_PER_SECOND, SECONDS_PER_MINUTE, MINUTES_PER_HOUR, HOURS_PER_DAY, RELAY_OVERLAP_SECONDS,
 } = require('./settings');
 
@@ -19,7 +19,6 @@ const ELERING_ENCODING = 'latin1';
 const STEP_LIMIT = 100000;
 const WATCHDOG_RUN_SECONDS = 10;
 const MINUTES_PER_DAY = HOURS_PER_DAY * MINUTES_PER_HOUR;
-const LOCATION = { lat: 59.437, lon: 24.7536 };
 const FAKE_CLOCK = `
     (function () {
         const RealDate = Date;
@@ -192,12 +191,18 @@ function forecastAnswer(sim, url) {
     return { code: 200, body: JSON.stringify({ hourly: { apparent_temperature: temperatures } }) };
 }
 
+function httpAnswer(sim, url) {
+    if (sim.httpFail && sim.httpFail.test(url)) return failed(limits.ERR_ASSUMED, 'Deadline exceeded');
+    if (url.indexOf('dashboard.elering.ee') >= 0) return ok(eleringAnswer(sim, url));
+    if (url.indexOf('api.open-meteo.com') >= 0) return ok(forecastAnswer(sim, url));
+    throw new Error('No simulated answer for ' + url);
+}
+
 function httpGet(sim, params) {
     sim.httpRequests.push(params.url);
-    if (sim.httpFail && sim.httpFail.test(params.url)) return failed(limits.ERR_ASSUMED, 'Deadline exceeded');
-    if (params.url.indexOf('dashboard.elering.ee') >= 0) return ok(eleringAnswer(sim, params.url));
-    if (params.url.indexOf('api.open-meteo.com') >= 0) return ok(forecastAnswer(sim, params.url));
-    throw new Error('No simulated answer for ' + params.url);
+    const answer = httpAnswer(sim, params.url);
+    sim.httpAnswers[params.url] = clone(answer);
+    return answer;
 }
 
 function scriptList(sim) {
@@ -277,7 +282,7 @@ function shellyApi(sim) {
             return { mem_used: 0, mem_peak: 0 };
         },
         getComponentConfig(type, id) {
-            if (type === 'sys') return { location: Object.assign({}, LOCATION) };
+            if (type === 'sys') return { location: Object.assign({}, DEVICE_LOCATION) };
             return { enable: scriptById(sim, id).enable };
         },
         getDeviceInfo: () => Object.assign({}, sim.deviceInfo),
@@ -347,6 +352,7 @@ function initialState(deviceOptions) {
         calls: [],
         logs: [],
         httpRequests: [],
+        httpAnswers: {},
         statusHandlers: [],
         timers: [],
         lastTimerHandle: 0,
