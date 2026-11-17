@@ -4,332 +4,397 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const limits = require('./limits');
-const { NORMAL_DAY, GEN2_DEVICE, HEATING_SCRIPT_ID, WATCHDOG_SCRIPT_ID } = require('./settings');
+const { DEVICE_TIME_ZONE, NORMAL_DAY, GEN2_DEVICE, HEATING_SCRIPT_ID, WATCHDOG_SCRIPT_ID } = require('./settings');
+
+process.env.TZ = DEVICE_TIME_ZONE;
 
 const ROOT = path.join(__dirname, '..');
 const FIXTURES = path.join(__dirname, 'fixtures');
-const SCRIPT = path.join(ROOT, 'SmartHeatingWidthShelly.js');
-const MAX_STEPS = 100000;
+const HEATING_SCRIPT = path.join(ROOT, 'SmartHeatingWidthShelly.js');
+const FORECAST_FIXTURE = 'open-meteo-24h.json';
+const ELERING_ENCODING = 'latin1';
+const STEP_LIMIT = 100000;
 const WATCHDOG_RUN_SECONDS = 10;
-const DEFAULT_SCRIPTS = [{ id: HEATING_SCRIPT_ID, name: 'Smart Heating', running: true }];
+const MINUTES_PER_DAY = 24 * 60;
+const SECONDS_PER_MINUTE = 60;
+const RELAY_OVERLAP_SECONDS = 10;
 const LOCATION = { lat: 59.437, lon: 24.7536 };
-const ELERING_HEADER = '"Ajatempel (UTC)";"Kuup\xe4ev (Eesti aeg)";"NPS Eesti"';
+const FAKE_CLOCK = `
+    (function () {
+        const RealDate = Date;
+        function FakeDate() {
+            if (!new.target) return new RealDate(__now()).toString();
+            return arguments.length ? new RealDate(...arguments) : new RealDate(__now());
+        }
+        FakeDate.prototype = RealDate.prototype;
+        FakeDate.now = function () { return __now(); };
+        FakeDate.UTC = RealDate.UTC;
+        FakeDate.parse = RealDate.parse;
+        globalThis.Date = FakeDate;
+        Math.random = function () { return 0; };
+    })();
+`;
 
-function readFixture(name) {
-    return fs.readFileSync(path.join(FIXTURES, name), 'latin1');
+function clone(value) {
+    return JSON.parse(JSON.stringify(value));
+}
+
+function ok(result) {
+    return [result, 0, ''];
+}
+
+function failed(code, message) {
+    return [null, code, message];
 }
 
 function eleringRows(fixture) {
-    const lines = readFixture(fixture).split('\n');
+    const lines = fs.readFileSync(path.join(FIXTURES, fixture), ELERING_ENCODING).split('\n');
     const rows = [];
     for (let i = 1; i < lines.length; i++) {
         if (!lines[i]) continue;
         const fields = lines[i].split(';').map((field) => field.replace(/"/g, ''));
-        rows.push({ ts: Number(fields[0]), price: Number(fields[2].replace(',', '.')), line: lines[i] });
+        rows.push({ timestamp: Number(fields[0]), price: Number(fields[2].replace(',', '.')), line: lines[i] });
     }
     return { header: lines[0], rows };
 }
 
-function forecastBody(temps, hours) {
-    const values = temps.slice(0, hours);
-    return JSON.stringify({ hourly: { time: values.map((value, i) => 'T' + i), apparent_temperature: values } });
+function forecastTemperatures() {
+    const forecast = JSON.parse(fs.readFileSync(path.join(FIXTURES, FORECAST_FIXTURE), 'utf8'));
+    return forecast.hourly.apparent_temperature;
 }
 
-function defaultTemps() {
-    return JSON.parse(readFixture('open-meteo-24h.json')).hourly.apparent_temperature;
+function crash(sim, reason) {
+    sim.crashed = sim.crashed || reason;
 }
 
-function createShelly(options) {
-    const opts = Object.assign({
-        now: NORMAL_DAY.now,
-        kvs: {},
-        schedules: {},
-        elering: NORMAL_DAY.fixture,
-        temps: null,
-        httpFail: null,
-        scriptFile: SCRIPT,
-        code: null,
-        scripts: DEFAULT_SCRIPTS.map((script) => Object.assign({}, script)),
-        scriptId: HEATING_SCRIPT_ID,
-        deviceInfo: GEN2_DEVICE,
-        components: [],
-    }, options);
+function addTask(sim, dueMs, run) {
+    sim.tasks.push({ dueMs, sequence: sim.taskSequence++, run });
+}
 
-    const sim = {
-        nowMs: Date.parse(opts.now),
-        kvs: Object.assign({}, opts.kvs),
-        schedules: new Map(),
-        calls: [],
-        logs: [],
-        httpRequests: [],
-        switchConfig: {},
-        scripts: opts.scripts.map((script) => Object.assign({}, script)),
-        scriptCode: {},
-        crashed: null,
-        inFlight: 0,
-        components: opts.components.map((component) => JSON.parse(JSON.stringify(component))),
-        group: null,
-        statusHandlers: [],
-        timers: new Map(),
-        timerSeq: 0,
-        tasks: [],
-        seq: 0,
-    };
-    for (const id of Object.keys(opts.schedules)) {
-        sim.schedules.set(Number(id), Object.assign({ enable: true }, opts.schedules[id]));
+function nextDueTask(sim, untilMs) {
+    let next = null;
+    for (const task of sim.tasks) {
+        const isBeforeNext = !next || task.dueMs < next.dueMs || (task.dueMs === next.dueMs && task.sequence < next.sequence);
+        if (task.dueMs <= untilMs && isBeforeNext) next = task;
     }
+    return next;
+}
 
-    const eleringData = opts.elering ? eleringRows(opts.elering) : null;
-    const temps = opts.temps || defaultTemps();
-
-    function enqueue(atMs, fn) {
-        sim.tasks.push({ at: atMs, seq: sim.seq++, fn });
+function runTask(sim, task) {
+    sim.tasks.splice(sim.tasks.indexOf(task), 1);
+    sim.nowMs = Math.max(sim.nowMs, task.dueMs);
+    try {
+        task.run();
+    } catch (error) {
+        sim.logs.push('Uncaught ' + error.stack);
+        crash(sim, error);
     }
+}
 
-    function log() {
-        sim.logs.push(Array.prototype.map.call(arguments, String).join(' '));
-    }
-
-    function eleringResponse(url) {
-        const query = new URL(url).searchParams;
-        const start = Date.parse(query.get('start')) / 1000;
-        const end = Date.parse(query.get('end')) / 1000;
-        let body = (eleringData ? eleringData.header : ELERING_HEADER) + '\n';
-        if (eleringData) {
-            for (const row of eleringData.rows) {
-                if (row.ts >= start && row.ts <= end) body += row.line + '\n';
-            }
+function runFor(sim, seconds) {
+    const untilMs = sim.nowMs + seconds * 1000;
+    let steps = 0;
+    for (let task = nextDueTask(sim, untilMs); task && !sim.crashed; task = nextDueTask(sim, untilMs)) {
+        steps++;
+        if (steps > STEP_LIMIT) {
+            crash(sim, `more than ${STEP_LIMIT} tasks in ${seconds} s`);
+            return;
         }
-        return { code: 200, body_b64: Buffer.from(body, 'latin1').toString('base64') };
+        runTask(sim, task);
     }
+    if (!sim.crashed) sim.nowMs = untilMs;
+}
 
-    function httpGet(params) {
-        sim.httpRequests.push(params.url);
-        if (opts.httpFail && opts.httpFail.test(params.url)) {
-            return [null, limits.ERR_DEADLINE_EXCEEDED, 'Deadline exceeded'];
-        }
-        if (params.url.indexOf('dashboard.elering.ee') >= 0) {
-            return [eleringResponse(params.url), 0, ''];
-        }
-        if (params.url.indexOf('api.open-meteo.com') >= 0) {
-            const hours = Number(new URL(params.url).searchParams.get('forecast_hours'));
-            return [{ code: 200, body: forecastBody(temps, hours) }, 0, ''];
-        }
-        return [null, limits.ERR_DEADLINE_EXCEEDED, 'Unknown host'];
-    }
+function kvsGet(sim, params) {
+    if (params.key in sim.kvs) return ok({ value: sim.kvs[params.key], etag: 'e' });
+    return failed(limits.ERR_NOT_FOUND, 'Argument \'key\', value \'' + params.key + '\' not found!');
+}
 
-    function lowestFreeScheduleId() {
-        let id = 1;
-        while (sim.schedules.has(id)) id++;
-        return id;
-    }
+function kvsSet(sim, params) {
+    const isNewKey = !(params.key in sim.kvs);
+    if (params.key.length > limits.KVS_KEY_LIMIT) return failed(limits.ERR_ASSUMED, 'Key too long');
+    if (limits.kvsLength(String(params.value)) > limits.KVS_VALUE_LIMIT) return failed(limits.ERR_ASSUMED, 'Value too long');
+    if (isNewKey && Object.keys(sim.kvs).length >= limits.KVS_KEY_COUNT_LIMIT) return failed(limits.ERR_ASSUMED, 'Too many keys');
+    sim.kvs[params.key] = params.value;
+    return ok({ etag: 'e', rev: 1 });
+}
 
-    function scheduleCreate(params) {
-        if (sim.schedules.size >= limits.SCHEDULE_LIMIT) return [null, limits.ERR_LIMIT_ASSUMED, 'Too many schedules'];
-        if (!params.calls || params.calls.length > limits.SCHEDULE_CALL_LIMIT) return [null, limits.ERR_LIMIT_ASSUMED, 'Too many calls'];
-        const id = lowestFreeScheduleId();
-        sim.schedules.set(id, JSON.parse(JSON.stringify(params)));
-        return [{ id, rev: id }, 0, ''];
-    }
+function lowestFreeScheduleId(sim) {
+    let id = 1;
+    while (sim.schedules.has(id)) id++;
+    return id;
+}
 
-    function scheduleDelete(params) {
-        return sim.schedules.delete(params.id) ? [{ rev: 1 }, 0, '']
-            : [null, limits.ERR_INVALID_ARGUMENT, 'Invalid argument \'id\': Not found!'];
-    }
+function scheduleCreate(sim, params) {
+    if (sim.schedules.size >= limits.SCHEDULE_LIMIT) return failed(limits.ERR_ASSUMED, 'Too many schedules');
+    if (params.calls.length > limits.SCHEDULE_CALL_LIMIT) return failed(limits.ERR_ASSUMED, 'Too many calls');
+    const id = lowestFreeScheduleId(sim);
+    sim.schedules.set(id, clone(params));
+    return ok({ id, rev: 1 });
+}
 
-    function scheduleUpdate(params) {
-        const job = sim.schedules.get(params.id);
-        if (!job) return [null, limits.ERR_NOT_FOUND, 'Argument \'id\' not found!'];
-        Object.assign(job, params);
-        return [{ rev: 1 }, 0, ''];
-    }
+function scheduleDelete(sim, params) {
+    if (sim.schedules.delete(params.id)) return ok({ rev: 1 });
+    return failed(limits.ERR_INVALID_ARGUMENT, 'Invalid argument \'id\': Not found!');
+}
 
-    function kvsGet(params) {
-        return params.key in sim.kvs ? [{ value: sim.kvs[params.key], etag: 'e' }, 0, '']
-            : [null, limits.ERR_NOT_FOUND, 'Argument \'key\', value \'' + params.key + '\' not found!'];
-    }
+function scheduleUpdate(sim, params) {
+    const job = sim.schedules.get(params.id);
+    if (!job) return failed(limits.ERR_NOT_FOUND, 'Argument \'id\' not found!');
+    Object.assign(job, params);
+    return ok({ rev: 1 });
+}
 
-    function kvsSet(params) {
-        const isNewKey = !(params.key in sim.kvs);
-        if (params.key.length > limits.KVS_KEY_LIMIT) return [null, limits.ERR_LIMIT_ASSUMED, 'Key too long'];
-        if (limits.kvsLength(String(params.value)) > limits.KVS_VALUE_LIMIT) return [null, limits.ERR_LIMIT_ASSUMED, 'Value too long'];
-        if (isNewKey && Object.keys(sim.kvs).length >= limits.KVS_KEY_COUNT_LIMIT) return [null, limits.ERR_LIMIT_ASSUMED, 'Too many keys'];
-        sim.kvs[params.key] = params.value;
-        return [{ etag: 'e', rev: 1 }, 0, ''];
-    }
+function virtualAdd(sim, params) {
+    const key = params.type + ':' + params.id;
+    const isIdInRange = params.id >= limits.VIRTUAL_ID_FIRST && params.id <= limits.VIRTUAL_ID_LAST;
+    if (!isIdInRange) return failed(limits.ERR_ASSUMED, 'Id out of range');
+    if (sim.components.some((component) => component.key === key)) return failed(limits.ERR_ASSUMED, 'Id not available');
+    if (sim.components.length >= limits.VIRTUAL_COMPONENT_LIMIT) return failed(limits.ERR_ASSUMED, 'Too many virtual components');
+    sim.components.push({ key, status: { value: params.config.default_value }, config: params.config });
+    return ok({ id: params.id });
+}
 
-    function virtualAdd(params) {
-        const key = params.type + ':' + params.id;
-        if (params.id < limits.VIRTUAL_ID_FIRST || params.id > limits.VIRTUAL_ID_LAST) return [null, limits.ERR_INVALID_ARGUMENT, 'Id out of range'];
-        if (sim.components.some((component) => component.key === key)) return [null, limits.ERR_LIMIT_ASSUMED, 'Id not available'];
-        if (sim.components.length >= limits.VIRTUAL_COMPONENT_LIMIT) return [null, limits.ERR_LIMIT_ASSUMED, 'Too many virtual components'];
-        sim.components.push({ key, status: { value: params.config.default_value }, config: params.config });
-        return [{ id: params.id }, 0, ''];
-    }
+function virtualDelete(sim, params) {
+    const remaining = sim.components.filter((component) => component.key !== params.key);
+    if (remaining.length === sim.components.length) return failed(limits.ERR_ASSUMED, 'Component not found');
+    sim.components = remaining;
+    return ok(null);
+}
 
-    function virtualDelete(params) {
-        const remaining = sim.components.filter((component) => component.key !== params.key);
-        if (remaining.length === sim.components.length) return [null, limits.ERR_NOT_FOUND, 'Component not found'];
-        sim.components = remaining;
-        return [null, 0, ''];
-    }
+function getComponents(sim) {
+    return ok({ components: clone(sim.components), offset: 0, total: sim.components.length });
+}
 
-    function scriptCreate(params) {
-        const id = Math.max(0, ...sim.scripts.map((script) => script.id)) + 1;
-        sim.scripts.push({ id, name: params.name, running: false });
-        return [{ id }, 0, ''];
-    }
+function groupSet(sim, params) {
+    sim.group = params.value;
+    return ok(null);
+}
 
-    function unixtime() {
-        return Math.floor(sim.nowMs / 1000);
-    }
+function switchSetConfig(sim, params) {
+    Object.assign(sim.switchConfig, params.config);
+    return ok({ restart_required: false });
+}
 
-    function rpc(method, params) {
-        const p = params || {};
-        switch (method.toLowerCase()) {
-            case 'kvs.get': return kvsGet(p);
-            case 'kvs.set': return kvsSet(p);
-            case 'schedule.create': return scheduleCreate(p);
-            case 'schedule.delete': return scheduleDelete(p);
-            case 'schedule.update': return scheduleUpdate(p);
-            case 'virtual.add': return virtualAdd(p);
-            case 'virtual.delete': return virtualDelete(p);
-            case 'script.create': return scriptCreate(p);
-            case 'http.get': return httpGet(p);
-            case 'switch.setconfig':
-                Object.assign(sim.switchConfig, p.config);
-                return [{ restart_required: false }, 0, ''];
-            case 'shelly.getcomponents':
-                return [{ components: JSON.parse(JSON.stringify(sim.components)), offset: 0, total: sim.components.length }, 0, ''];
-            case 'group.set':
-                sim.group = p.value;
-                return [null, 0, ''];
-            case 'script.list':
-                return [{ scripts: sim.scripts.map((script) => Object.assign({}, script)) }, 0, ''];
-            case 'script.putcode':
-                sim.scriptCode[p.id] = p.code;
-                return [{ len: p.code.length }, 0, ''];
-            case 'script.start':
-            case 'script.stop':
-            case 'script.setconfig':
-                return [null, 0, ''];
-            default:
-                return [null, limits.ERR_UNAVAILABLE, 'Method ' + method + ' not mocked'];
-        }
-    }
+function eleringAnswer(sim, url) {
+    const query = new URL(url).searchParams;
+    const start = Date.parse(query.get('start')) / 1000;
+    const end = Date.parse(query.get('end')) / 1000;
+    const lines = sim.prices.rows.filter((row) => row.timestamp >= start && row.timestamp <= end).map((row) => row.line);
+    const body = [sim.prices.header].concat(lines).join('\n') + '\n';
+    return { code: 200, body_b64: Buffer.from(body, ELERING_ENCODING).toString('base64') };
+}
 
-    const Shelly = {
+function forecastAnswer(sim, url) {
+    const hours = Number(new URL(url).searchParams.get('forecast_hours'));
+    const temperatures = sim.temperatures.slice(0, hours);
+    return { code: 200, body: JSON.stringify({ hourly: { apparent_temperature: temperatures } }) };
+}
+
+function httpGet(sim, params) {
+    sim.httpRequests.push(params.url);
+    if (sim.httpFail && sim.httpFail.test(params.url)) return failed(limits.ERR_ASSUMED, 'Deadline exceeded');
+    if (params.url.indexOf('dashboard.elering.ee') >= 0) return ok(eleringAnswer(sim, params.url));
+    if (params.url.indexOf('api.open-meteo.com') >= 0) return ok(forecastAnswer(sim, params.url));
+    throw new Error('No simulated answer for ' + params.url);
+}
+
+function scriptList(sim) {
+    return ok({ scripts: sim.scripts.map((script) => ({ id: script.id, name: script.name, running: script.running })) });
+}
+
+function scriptCreate(sim, params) {
+    const id = Math.max(...sim.scripts.map((script) => script.id)) + 1;
+    sim.scripts.push({ id, name: params.name, running: false, enable: false });
+    return ok({ id });
+}
+
+function scriptPutCode(sim, params) {
+    sim.scriptCode[params.id] = params.code;
+    return ok({ len: params.code.length });
+}
+
+function scriptSetConfig(sim, params) {
+    Object.assign(sim.scripts.find((script) => script.id === params.id), params.config);
+    return ok({ restart_required: false });
+}
+
+function setScriptRunning(sim, params, isRunning) {
+    const script = sim.scripts.find((entry) => entry.id === params.id);
+    const wasRunning = script.running;
+    script.running = isRunning;
+    return ok({ was_running: wasRunning });
+}
+
+const RPC_HANDLERS = {
+    'kvs.get': kvsGet,
+    'kvs.set': kvsSet,
+    'schedule.create': scheduleCreate,
+    'schedule.delete': scheduleDelete,
+    'schedule.update': scheduleUpdate,
+    'virtual.add': virtualAdd,
+    'virtual.delete': virtualDelete,
+    'shelly.getcomponents': getComponents,
+    'group.set': groupSet,
+    'switch.setconfig': switchSetConfig,
+    'http.get': httpGet,
+    'script.list': scriptList,
+    'script.create': scriptCreate,
+    'script.putcode': scriptPutCode,
+    'script.setconfig': scriptSetConfig,
+    'script.start': (sim, params) => setScriptRunning(sim, params, true),
+    'script.stop': (sim, params) => setScriptRunning(sim, params, false),
+};
+
+function answerOf(sim, method, params) {
+    const handler = RPC_HANDLERS[method.toLowerCase()];
+    if (!handler) throw new Error('Method ' + method + ' is not simulated');
+    return handler(sim, params || {});
+}
+
+function shellyApi(sim) {
+    return {
         call(method, params, callback, userdata) {
-            sim.calls.push({ method, params: params ? JSON.parse(JSON.stringify(params)) : params });
-            const answer = rpc(method, params);
-            if (sim.inFlight >= limits.RPC_CALL_LIMIT) {
-                sim.crashed = sim.crashed || `more than ${limits.RPC_CALL_LIMIT} RPC calls in flight (${method})`;
-            }
-            sim.inFlight++;
-            enqueue(sim.nowMs, () => {
-                sim.inFlight--;
-                if (typeof callback === 'function') callback(answer[0], answer[1], answer[2], userdata);
+            sim.calls.push({ method, params: params ? clone(params) : params });
+            const [result, code, message] = answerOf(sim, method, params);
+            if (sim.callsInFlight >= limits.RPC_CALL_LIMIT) crash(sim, `more than ${limits.RPC_CALL_LIMIT} RPC calls in flight (${method})`);
+            sim.callsInFlight++;
+            addTask(sim, sim.nowMs, () => {
+                sim.callsInFlight--;
+                if (typeof callback === 'function') callback(result, code, message, userdata);
             });
         },
-        getComponentStatus(type, id) {
-            if (type === 'sys') return { unixtime: unixtime() };
-            if (String(type).indexOf('script') === 0) return { id, running: true, mem_used: 0, mem_peak: 0 };
-            return {};
+        getComponentStatus(type) {
+            if (type === 'sys') return { unixtime: Math.floor(sim.nowMs / 1000) };
+            return { mem_used: 0, mem_peak: 0 };
         },
-        getComponentConfig(type) {
-            if (type === 'sys') return { location: LOCATION };
-            if (String(type).indexOf('script') === 0) return { enable: true };
-            return {};
+        getComponentConfig(type, id) {
+            if (type === 'sys') return { location: Object.assign({}, LOCATION) };
+            return { enable: sim.scripts.find((script) => script.id === id).enable };
         },
-        getDeviceInfo() { return opts.deviceInfo; },
-        getCurrentScriptId() { return opts.scriptId; },
-        addStatusHandler(fn) { sim.statusHandlers.push(fn); return sim.statusHandlers.length; },
+        getDeviceInfo: () => Object.assign({}, sim.deviceInfo),
+        getCurrentScriptId: () => sim.scriptId,
+        addStatusHandler(handler) {
+            sim.statusHandlers.push(handler);
+        },
     };
+}
 
-    const Timer = {
-        set(ms, repeat, fn, userdata) {
-            const timer = { handle: ++sim.timerSeq, cleared: false };
+function timerApi(sim) {
+    return {
+        set(delayMs, isRepeating, callback, userdata) {
+            const timer = { handle: ++sim.lastTimerHandle, isCleared: false };
             const fire = () => {
-                if (timer.cleared) return;
-                if (repeat) enqueue(sim.nowMs + ms, fire);
-                else timer.cleared = true;
-                fn(userdata);
+                if (timer.isCleared) return;
+                if (isRepeating) addTask(sim, sim.nowMs + delayMs, fire);
+                else timer.isCleared = true;
+                callback(userdata);
             };
-            enqueue(sim.nowMs + ms, fire);
-            sim.timers.set(timer.handle, timer);
-            const active = [...sim.timers.values()].filter((t) => !t.cleared).length;
-            if (active > limits.TIMER_LIMIT) sim.crashed = sim.crashed || `more than ${limits.TIMER_LIMIT} timers active`;
+            addTask(sim, sim.nowMs + delayMs, fire);
+            sim.timers.push(timer);
+            const activeCount = sim.timers.filter((entry) => !entry.isCleared).length;
+            if (activeCount > limits.TIMER_LIMIT) crash(sim, `more than ${limits.TIMER_LIMIT} timers active`);
             return timer.handle;
         },
         clear(handle) {
-            const timer = sim.timers.get(handle);
-            if (timer) timer.cleared = true;
-            return !!timer;
+            const timer = sim.timers.find((entry) => entry.handle === handle);
+            if (timer) timer.isCleared = true;
+            return Boolean(timer);
         },
     };
+}
 
+function heatingMinutes(sim) {
+    const minutesPerStart = (sim.switchConfig.auto_off_delay - RELAY_OVERLAP_SECONDS) / SECONDS_PER_MINUTE;
+    const minutesOn = new Set();
+    for (const job of sim.schedules.values()) {
+        const fields = job.timespec.split(' ');
+        const startMinute = Number(fields[1]);
+        for (const hour of fields[2].split(',').map(Number)) {
+            for (let i = 0; i < minutesPerStart; i++) minutesOn.add((hour * 60 + startMinute + i) % MINUTES_PER_DAY);
+        }
+    }
+    return minutesOn.size;
+}
+
+function initialState(settings) {
+    const schedules = new Map();
+    for (const id of Object.keys(settings.schedules)) {
+        schedules.set(Number(id), Object.assign({ enable: true }, settings.schedules[id]));
+    }
+    return {
+        nowMs: Date.parse(settings.now),
+        kvs: Object.assign({}, settings.kvs),
+        schedules,
+        components: clone(settings.components),
+        scripts: clone(settings.scripts),
+        scriptId: settings.scriptId,
+        deviceInfo: settings.deviceInfo,
+        prices: eleringRows(settings.elering),
+        temperatures: settings.temps || forecastTemperatures(),
+        httpFail: settings.httpFail,
+        scriptCode: {},
+        switchConfig: {},
+        group: null,
+        calls: [],
+        logs: [],
+        httpRequests: [],
+        statusHandlers: [],
+        timers: [],
+        lastTimerHandle: 0,
+        tasks: [],
+        taskSequence: 0,
+        callsInFlight: 0,
+        crashed: null,
+    };
+}
+
+function createShelly(options) {
+    const settings = Object.assign({
+        now: NORMAL_DAY.now,
+        kvs: {},
+        schedules: {},
+        components: [],
+        elering: NORMAL_DAY.fixture,
+        temps: null,
+        httpFail: null,
+        code: null,
+        scripts: [{ id: HEATING_SCRIPT_ID, name: 'Smart Heating', running: true, enable: true }],
+        scriptId: HEATING_SCRIPT_ID,
+        deviceInfo: GEN2_DEVICE,
+    }, options);
+    const sim = initialState(settings);
+    const shelly = shellyApi(sim);
+    const timer = timerApi(sim);
+    const log = (...parts) => sim.logs.push(parts.map(String).join(' '));
     const context = vm.createContext({
-        Shelly,
-        Timer,
+        Shelly: shelly,
+        Timer: timer,
         print: log,
         console: { log },
-        atob: (b64) => Buffer.from(b64, 'base64').toString('latin1'),
+        atob: (text) => Buffer.from(text, 'base64').toString(ELERING_ENCODING),
         __now: () => sim.nowMs,
     });
-    vm.runInContext(`
-        (function () {
-            const RealDate = Date;
-            function FakeDate() {
-                if (!new.target) return new RealDate(__now()).toString();
-                return arguments.length ? new RealDate(...arguments) : new RealDate(__now());
-            }
-            FakeDate.prototype = RealDate.prototype;
-            FakeDate.now = function () { return __now(); };
-            FakeDate.UTC = RealDate.UTC;
-            FakeDate.parse = RealDate.parse;
-            globalThis.Date = FakeDate;
-            Math.random = function () { return 0; };
-        })();
-    `, context);
+    vm.runInContext(FAKE_CLOCK, context);
 
     sim.eval = (code) => vm.runInContext(code, context);
     sim.load = () => {
-        const code = opts.code === null ? fs.readFileSync(opts.scriptFile, 'utf8') : opts.code;
-        vm.runInContext(code, context, { filename: path.basename(opts.scriptFile) });
+        sim.eval(settings.code === null ? fs.readFileSync(HEATING_SCRIPT, 'utf8') : settings.code);
         return sim;
     };
     sim.runFor = (seconds) => {
-        const until = sim.nowMs + seconds * 1000;
-        for (let steps = 0; steps < MAX_STEPS; steps++) {
-            if (sim.crashed) return sim;
-            let next = null;
-            for (const task of sim.tasks) {
-                if (task.at <= until && (!next || task.at < next.at || (task.at === next.at && task.seq < next.seq))) next = task;
-            }
-            if (!next) break;
-            sim.tasks.splice(sim.tasks.indexOf(next), 1);
-            sim.nowMs = Math.max(sim.nowMs, next.at);
-            try {
-                next.fn();
-            } catch (error) {
-                sim.crashed = error;
-                sim.logs.push('Uncaught ' + error.stack);
-            }
-        }
-        sim.nowMs = Math.max(sim.nowMs, until);
+        runFor(sim, seconds);
         return sim;
     };
     sim.rpc = (method, params) => {
         let answer = null;
-        Shelly.call(method, params, (result, code, message) => { answer = { result, code, message }; });
-        sim.runFor(0);
+        shelly.call(method, params, (result, code, message) => { answer = { result, code, message }; });
+        runFor(sim, 0);
         return answer;
     };
-    sim.setTimer = (ms) => Timer.set(ms, false, () => {});
-    sim.emitStatus = (status) => {
-        for (const handler of sim.statusHandlers) handler(status);
-        return sim;
-    };
+    sim.setTimer = (delayMs) => timer.set(delayMs, false, () => {});
+    sim.emitStatus = (status) => sim.statusHandlers.forEach((handler) => handler(status));
+    sim.heatingMinutes = () => heatingMinutes(sim);
     sim.timespecs = () => [...sim.schedules.values()].map((job) => job.timespec).sort();
     sim.json = (key) => JSON.parse(sim.kvs[key]);
     return sim;
@@ -345,4 +410,4 @@ function runWatchdog(sim, code, stoppedScriptId) {
     return watchdog;
 }
 
-module.exports = { createShelly, runWatchdog, eleringRows, ROOT, SCRIPT };
+module.exports = { createShelly, runWatchdog, eleringRows, ROOT };

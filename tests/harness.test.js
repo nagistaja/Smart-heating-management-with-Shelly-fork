@@ -63,6 +63,10 @@ describe('simulated device limits', () => {
         assert.equal('too_long' in sim.kvs, false);
     });
 
+    it('counts a KVS value in UTF-8 bytes', () => {
+        assert.equal(limits.kvsLength('\u00f5'), 2);
+    });
+
     it(`accepts a KVS key of at most ${limits.KVS_KEY_LIMIT} characters`, () => {
         const sim = emptyDevice();
         assert.equal(sim.rpc('KVS.Set', { key: 'k'.repeat(limits.KVS_KEY_LIMIT), value: '1' }).code, 0);
@@ -104,5 +108,16 @@ describe('simulated device limits', () => {
         assert.equal(sim.crashed, null);
         sim.setTimer(1000);
         assert.match(String(sim.crashed), /timers active/);
+    });
+
+    it('stops a run that never comes to rest', () => {
+        const sim = emptyDevice();
+        sim.eval('Timer.set(0, true, function () {});');
+        sim.runFor(1);
+        assert.match(String(sim.crashed), /tasks in 1 s/);
+    });
+
+    it('refuses an RPC method it does not simulate', () => {
+        assert.throws(() => emptyDevice().rpc('Sys.Reboot'), /is not simulated/);
     });
 });

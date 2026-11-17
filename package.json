@@ -3,7 +3,7 @@
   "private": true,
   "description": "Tests for the Shelly smart heating script",
   "scripts": {
-    "test": "TZ=Europe/Tallinn node --test 'tests/*.test.js'"
+    "test": "node --test"
   },
   "engines": {
     "node": ">=22"

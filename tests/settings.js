@@ -1,5 +1,8 @@
 'use strict';
 
+const DEVICE_TIME_ZONE = 'Europe/Tallinn';
+const SCRIPT_VERSION = 4.9;
+
 const DEFAULT_CONF = {
     TimePeriod: 24, HeatingTime: 10, IsForecastUsed: false, EnergyProvider: 'VORK2', AlwaysOnPrice: 1,
     AlwaysOffPrice: 300, InvertedRelay: false, RelayId: 0, Country: 'ee', HeatingCurve: 0, ManualKVS: false,
@@ -20,10 +23,11 @@ const AUTUMN_DST_DAY = { fixture: 'elering-2025-10-26-dst-autumn.csv', isoDate: 
 const HEATING_SCRIPT_ID = 1;
 const WATCHDOG_SCRIPT_ID = 2;
 
-const GEN2_DEVICE = { gen: 2, app: 'Plus1PM', ver: '1.7.5', id: 'shellyplus1pm-test' };
-const GEN3_DEVICE = { gen: 3, app: 'S3SW-001P16EU', ver: '1.7.5', id: 'shelly1pmg3-test' };
+const GEN2_DEVICE = { gen: 2, app: 'Plus1PM', ver: '1.7.6', id: 'shellyplus1pm-test' };
+const GEN3_DEVICE = { gen: 3, app: 'S3SW-001P16EU', ver: '1.7.6', id: 'shelly1pmg3-test' };
 
 module.exports = {
+    DEVICE_TIME_ZONE, SCRIPT_VERSION,
     DEFAULT_CONF, STORAGE_TANK_CONF, HOT_WATER_CONF,
     NORMAL_DAY, HOT_WATER_DAY, NEGATIVE_DAY, SPRING_DST_DAY, AUTUMN_DST_DAY,
     HEATING_SCRIPT_ID, WATCHDOG_SCRIPT_ID, GEN2_DEVICE, GEN3_DEVICE,

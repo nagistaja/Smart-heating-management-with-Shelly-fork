@@ -12,19 +12,17 @@ const KVS_KEY_LIMIT = 42;
 const KVS_KEY_COUNT_LIMIT = 50;
 
 const ERR_INVALID_ARGUMENT = -103;
-const ERR_DEADLINE_EXCEEDED = -104;
 const ERR_NOT_FOUND = -105;
-const ERR_UNAVAILABLE = -114;
-const ERR_LIMIT_ASSUMED = -108;
+const ERR_ASSUMED = -108;
 
 function kvsLength(value) {
-    return value.length + (value.match(/"/g) || []).length;
+    return Buffer.byteLength(value, 'utf8') + (value.match(/"/g) || []).length;
 }
 
 module.exports = {
     RPC_CALL_LIMIT, TIMER_LIMIT, SCHEDULE_LIMIT, SCHEDULE_CALL_LIMIT,
     VIRTUAL_COMPONENT_LIMIT, VIRTUAL_ID_FIRST, VIRTUAL_ID_LAST,
     KVS_VALUE_LIMIT, KVS_KEY_LIMIT, KVS_KEY_COUNT_LIMIT,
-    ERR_INVALID_ARGUMENT, ERR_DEADLINE_EXCEEDED, ERR_NOT_FOUND, ERR_UNAVAILABLE, ERR_LIMIT_ASSUMED,
+    ERR_INVALID_ARGUMENT, ERR_NOT_FOUND, ERR_ASSUMED,
     kvsLength,
 };
