@@ -108,16 +108,16 @@ The memory test runs one calculation of the script in Espruino, the interpreter 
 
 | File | What it is |
 |---|---|
-| `build-espruino.sh` | Builds Espruino for Linux in Docker into `tests/espruino/bin/`, from a fixed Espruino commit. The build is 32-bit, so a memory block is 14 bytes as on the devices. |
+| `build-espruino.sh` | Builds Espruino for Linux in Docker into `tests/espruino/bin/`, from a fixed Espruino commit and a fixed Debian image. The binary is 32-bit (`gcc -m32`), so a memory block is 14 bytes as on the devices. |
 | `espruino-shelly.patch` | Applied to Espruino before the build: a counter of the highest memory use, a clock the test can set, a memory size given at start and the loading of several files into one interpreter. |
 | `script-memory.js` | The test: three sets of settings on five days, with the numbers of version 4.9 for each. |
 | `engine.js` | Runs a case first in Node, then in Espruino. |
 | `shelly-device.js` | The simulated device inside Espruino. It answers each RPC call with the answer the same call got in Node, so the two runs cannot drift apart. |
 | `one-cycle.js` | Runs one calculation and prints the result. |
 
-`build-espruino.sh` reads two variables. `ESPRUINO_WORKDIR` keeps the Espruino sources between builds, otherwise they go to a temporary directory that is removed. `ESPRUINO_DOCKER_OPTIONS` is passed to `docker run`.
+`ESPRUINO_WORKDIR` keeps the Espruino sources between builds, otherwise `build-espruino.sh` puts them in a temporary directory and removes it.
 
-The GitHub Action builds Espruino once, in about 40 seconds, and keeps it in the cache until the build script or the patch changes. On the GitHub runner the 32-bit container cannot open a network socket under the default seccomp profile of Docker, so the Action sets `ESPRUINO_DOCKER_OPTIONS` to `--security-opt seccomp=unconfined` for the build container. On a workstation the default profile is enough.
+The GitHub Action builds Espruino once, in about 40 seconds, and keeps it in the cache until the build script or the patch changes.
 
 ### What is measured
 

@@ -3,7 +3,7 @@ set -euo pipefail
 
 ESPRUINO_REPO=https://github.com/espruino/Espruino.git
 ESPRUINO_COMMIT=e73051ad4b9380a562da40796626254af1a19d57 # 2v29, 2026-10-06 "fix classic ESP32 build"
-DOCKER_IMAGE=debian:trixie-slim
+DOCKER_IMAGE=debian:trixie-slim@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2
 CONTAINER=shelly-espruino-build
 
 here=$(cd "$(dirname "$0")" && pwd)
