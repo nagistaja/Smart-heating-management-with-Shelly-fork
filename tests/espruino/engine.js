@@ -4,44 +4,43 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
-const { createShelly, ROOT } = require('../harness');
+const { createShelly, HEATING_SCRIPT } = require('../harness');
 const limits = require('../limits');
-const {
-    GEN2_DEVICE, DEVICE_LOCATION, DEVICE_DAYLIGHT_SAVING, HEATING_SCRIPT_ID, HEATING_SCRIPT_ENTRY, MILLISECONDS_PER_SECOND,
-} = require('../settings');
+const { DEVICE_DAYLIGHT_SAVING, CYCLE_SECONDS, MILLISECONDS_PER_SECOND } = require('../settings');
 
-const HEATING_SCRIPT = path.join(ROOT, 'SmartHeatingWidthShelly.js');
 const SIMULATED_DEVICE = path.join(__dirname, 'shelly-device.js');
 const ONE_CYCLE = path.join(__dirname, 'one-cycle.js');
 const BINARY = path.join(__dirname, 'bin', 'espruino');
-const CYCLE_SECONDS = 120;
 const TIMEOUT_MS = 120000;
 const POOL_BLOCKS = 5000;
 const MARKS = { result: 'MEMRESULT', error: 'DEVICEERROR' };
+const KVS_KEY_WITH_DATE_TEXT = /^SmartHeatingSys/;
 
 function hasBinary() {
     return fs.existsSync(BINARY);
 }
 
-function runInNode(deviceOptions) {
-    const sim = createShelly(deviceOptions).load().runFor(CYCLE_SECONDS);
+function runInNode(caseOptions) {
+    const sim = createShelly(caseOptions).load().runFor(CYCLE_SECONDS);
     if (sim.crashed) throw new Error('The run in Node crashed: ' + sim.crashed);
     return sim;
 }
 
 function recordedCall(call) {
-    return { method: call.method, timespec: call.params ? call.params.timespec : undefined, answer: call.answer };
+    const isKeyOnly = call.method.toLowerCase() === 'kvs.set' && KVS_KEY_WITH_DATE_TEXT.test(call.params.key);
+    const compared = isKeyOnly ? { key: call.params.key } : call.params;
+    return { method: call.method, answer: call.answer, isKeyOnly, paramsText: JSON.stringify(compared) };
 }
 
-function scenarioOf(deviceOptions, sim) {
+function scenarioOf(sim, isComparing) {
     return {
-        now: Date.parse(deviceOptions.now),
-        deviceInfo: deviceOptions.deviceInfo,
-        scripts: deviceOptions.scripts,
-        scriptId: deviceOptions.scriptId,
-        location: DEVICE_LOCATION,
+        now: Date.parse(sim.options.now),
+        deviceInfo: sim.options.deviceInfo,
+        scriptId: sim.options.scriptId,
         daylightSaving: DEVICE_DAYLIGHT_SAVING,
         calls: sim.calls.map(recordedCall),
+        reads: sim.reads,
+        isComparing,
         pendingTaskLimit: limits.RPC_CALL_LIMIT + limits.TIMER_LIMIT,
         runSeconds: CYCLE_SECONDS,
         millisecondsPerSecond: MILLISECONDS_PER_SECOND,
@@ -79,9 +78,9 @@ function linesAfter(lines, mark) {
 function parse(run) {
     const lines = run.output.split('\n');
     const [resultText] = linesAfter(lines, MARKS.result);
-    if (!resultText) {
+    if (!resultText || run.exitCode !== 0) {
         const ending = run.isTimedOut ? `was killed after ${TIMEOUT_MS} ms` : `ended with exit code ${run.exitCode} and signal ${run.signal}`;
-        throw new Error(`Espruino printed no result and ${ending}:\n${run.output.slice(-2000)}`);
+        throw new Error(`Espruino ${resultText ? 'printed a result but' : 'printed no result and'} ${ending}:\n${run.output.slice(-2000)}`);
     }
     const result = JSON.parse(resultText);
     return {
@@ -89,7 +88,8 @@ function parse(run) {
         retainedBytes: (result.retainedBlocks - result.baselineBlocks) * result.blockBytes,
         blockBytes: result.blockBytes,
         isPoolFull: result.peakBlocks >= POOL_BLOCKS,
-        answeredCalls: result.answeredCalls,
+        callCount: result.callCount,
+        readCount: result.readCount,
         crashed: result.crashed,
         engineErrors: result.errors,
         deviceErrors: linesAfter(lines, MARKS.error),
@@ -97,15 +97,28 @@ function parse(run) {
     };
 }
 
+async function runInEspruino(directory, scriptFile, sim, isComparing) {
+    const scenarioFile = path.join(directory, isComparing ? 'compare.js' : 'measure.js');
+    fs.writeFileSync(scenarioFile, 'var __scenario = ' + JSON.stringify(scenarioOf(sim, isComparing)) + ';\n');
+    return parse(await runBinary([scenarioFile, SIMULATED_DEVICE, scriptFile, ONE_CYCLE]));
+}
+
 async function measure(caseOptions) {
-    const deviceOptions = Object.assign({ deviceInfo: GEN2_DEVICE, scripts: [HEATING_SCRIPT_ENTRY], scriptId: HEATING_SCRIPT_ID }, caseOptions);
-    const sim = runInNode(deviceOptions);
+    const sim = runInNode(caseOptions);
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'shelly-espruino-'));
-    const scenarioFile = path.join(directory, 'scenario.js');
     try {
-        fs.writeFileSync(scenarioFile, 'var __scenario = ' + JSON.stringify(scenarioOf(deviceOptions, sim)) + ';\n');
-        const measured = parse(await runBinary([scenarioFile, SIMULATED_DEVICE, HEATING_SCRIPT, ONE_CYCLE]));
-        return Object.assign(measured, { callsInNode: sim.calls.length });
+        let scriptFile = HEATING_SCRIPT;
+        if (typeof caseOptions.code === 'string') {
+            scriptFile = path.join(directory, 'script.js');
+            fs.writeFileSync(scriptFile, caseOptions.code + '\n');
+        }
+        const measured = await runInEspruino(directory, scriptFile, sim, false);
+        const compared = await runInEspruino(directory, scriptFile, sim, true);
+        return Object.assign(measured, {
+            differencesFromNode: measured.deviceErrors.concat(compared.deviceErrors),
+            callsInNode: sim.calls.length,
+            readsInNode: sim.reads.length,
+        });
     } finally {
         fs.rmSync(directory, { recursive: true, force: true });
     }

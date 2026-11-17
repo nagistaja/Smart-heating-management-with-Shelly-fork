@@ -18,7 +18,7 @@ index 0000000..6c361bb
 +   'libraries' : [],
 +   'makefile' : [
 +     'DEFINES+=-DJSVAR_MALLOC',
-+     'DEFINES+=-DUSE_CALLFUNCTION_HACK', # required by i386 builds, works on 64-bit too
++     'DEFINES+=-DUSE_CALLFUNCTION_HACK', # required by 32-bit builds
 +     'LINUX=1',
 +   ]
 + }

@@ -71,6 +71,8 @@ The network fee tests call `fFee` and set `_.prov` and `c.pack` inside the scrip
 | ID of a new script | the lowest free one | Gen4 |
 | Autostart of a script made by `Script.Create` | off | Gen4 |
 | `Script.Start`, `Script.Stop` | answer `{ was_running }` | Shelly docs, Script, and Gen4 |
+| Callback of an RPC call | on success a result and the message `""`, on failure the result `undefined`, a code and a message | Gen4 |
+| `Timer.clear` | `true` for a pending timer, otherwise `undefined` | Gen4 |
 | `HTTP.GET` answer | Elering in `body_b64`, Open-Meteo in `body` | Shelly docs, HTTP: `body` for text and JSON, `body_b64` for binary data. Elering answers with `application/octet-stream`. |
 
 The simulated devices are a Shelly Plus 1PM (Gen2, KVS mode), a Shelly Pro 1PM (Gen2, Virtual Component mode), a Shelly 1PM Gen3 and a Shelly 1PM Mini Gen4 (both Virtual Component mode). The Gen2 and Gen3 devices report firmware 1.7.6, the Gen4 reports 2.2.1. They differ only in what `Shelly.getDeviceInfo()` answers, which decides the mode. The limits and error codes are the same for all of them.
@@ -110,29 +112,31 @@ The memory test runs one calculation of the script in Espruino, the interpreter 
 |---|---|
 | `build-espruino.sh` | Builds Espruino for Linux in Docker into `tests/espruino/bin/`, from a fixed Espruino commit and a fixed Debian image. The binary is 32-bit (`gcc -m32`), so a memory block is 14 bytes as on the devices. |
 | `espruino-shelly.patch` | Applied to Espruino before the build: a counter of the highest memory use, a clock the test can set, a memory size given at start and the loading of several files into one interpreter. |
-| `script-memory.js` | The test: three sets of settings on five days, with the numbers of version 4.9 for each. |
-| `engine.js` | Runs a case first in Node, then in Espruino. |
-| `shelly-device.js` | The simulated device inside Espruino. It answers each RPC call with the answer the same call got in Node, so the two runs cannot drift apart. |
+| `script-memory.js` | The test: three sets of settings on five days, with the numbers of version 4.9 for each, and a few tiny scripts that check the simulated device itself. |
+| `engine.js` | Runs a case first in Node, then twice in Espruino: once to measure, once to compare with the Node run. |
+| `shelly-device.js` | The simulated device inside Espruino. It answers each RPC call and each status or configuration read with the answer the same one got in Node. |
 | `one-cycle.js` | Runs one calculation and prints the result. |
 
 `ESPRUINO_WORKDIR` keeps the Espruino sources between builds, otherwise `build-espruino.sh` puts them in a temporary directory and removes it.
 
-The GitHub Action builds Espruino once, in about 40 seconds, and keeps it in the cache until the build script or the patch changes.
+The GitHub Action builds Espruino once, in about 40 seconds, and keeps it in the cache until the build script or the patch changes. GitHub also drops a cache that was not used for a week, and the next run then builds Espruino again.
 
 ### What is measured
 
-Every case runs in KVS mode on a simulated Shelly Plus 1PM, from an empty device, so the calculation includes the install of the watchdog. Virtual Component mode is not measured.
+Every case runs in KVS mode on a simulated Shelly Plus 1PM that has only the settings in KVS, so the calculation includes the install of the watchdog. Virtual Component mode and the first install without settings are not measured.
 
 Two numbers are read, both counted from the moment the simulated device is ready and the script has not been loaded yet:
 
 - **Peak**: the most memory in use at one moment while the script loads and plans, checked at every allocation.
 - **Retained**: what is still in use after the calculation.
 
-The simulated device keeps its queue of pending timers and RPC answers in memory it took before that moment, so the queue is not in the numbers. On a Gen4 a second and a third pending timer added nothing to the memory of a script either. What stays in the numbers are the function calls of the simulated device while it calls into the script: a script that is one empty function with one timer and one RPC answer peaks at 518 bytes here and retains 140. That part is the same for every version of the script.
+The simulated device keeps its queue of pending timers and RPC answers in memory it took before that moment, so the queue is not in the numbers. On a Gen4 a second and a third pending timer added nothing to the memory of a script either. The test checks this on itself: a script that is one empty function retains 126 bytes, and exactly as much with five timers that have fired, with three pending timers and with three RPC answers.
+
+What stays in the numbers are the function calls of the simulated device while it calls into the script. An empty script peaks at 294 bytes and retains 98. One empty function with one timer and one RPC answer peaks at 532 bytes and retains 126. That part is the same for every version of the script.
 
 The memory Espruino gets for the test is 5000 blocks, far more than a device has, so a case never fails for lack of memory.
 
-In Espruino the script must make the same RPC calls in the same order as in Node, with the same schedule. `script-memory.js` holds the peak and the retained memory of version 4.9 for every case, between 15 624 and 16 072 bytes of peak and 3 948 to 3 976 bytes retained. A change that moves any of them fails the test until the table is updated, so a gain or a loss shows in the pull request.
+In Espruino the script must make the same RPC calls and reads in the same order as in Node. The second run in Espruino also compares the parameters of every call with the Node run and reports a difference. One value is left out of that: the date text in `SmartHeatingSys`, which the two engines write differently. `script-memory.js` holds the peak and the retained memory of version 4.9 for every case, between 15 624 and 16 072 bytes of peak and 3 920 to 3 948 bytes retained. A change that moves any of them fails the test until the table is updated, so a gain or a loss shows in the pull request.
 
 ### How the numbers relate to a device
 

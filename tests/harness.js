@@ -44,7 +44,7 @@ function ok(result) {
 }
 
 function failed(code, message) {
-    return [null, code, message];
+    return [undefined, code, message];
 }
 
 function eleringRows(fixture) {
@@ -260,6 +260,11 @@ function answerOf(sim, method, params) {
     return handler(sim, params || {});
 }
 
+function recordedRead(sim, name, answer) {
+    sim.reads.push({ name, answer: clone(answer) });
+    return answer;
+}
+
 function shellyApi(sim) {
     return {
         call(method, params, callback, userdata) {
@@ -276,12 +281,12 @@ function shellyApi(sim) {
             });
         },
         getComponentStatus(type) {
-            if (type === 'sys') return { unixtime: Math.floor(sim.nowMs / MILLISECONDS_PER_SECOND) };
-            return { mem_used: 0, mem_peak: 0 };
+            if (type === 'sys') return recordedRead(sim, 'getComponentStatus', { unixtime: Math.floor(sim.nowMs / MILLISECONDS_PER_SECOND) });
+            return recordedRead(sim, 'getComponentStatus', { mem_used: 0, mem_peak: 0 });
         },
         getComponentConfig(type, id) {
-            if (type === 'sys') return { location: Object.assign({}, DEVICE_LOCATION) };
-            return { enable: scriptById(sim, id).enable };
+            if (type === 'sys') return recordedRead(sim, 'getComponentConfig', { location: Object.assign({}, DEVICE_LOCATION) });
+            return recordedRead(sim, 'getComponentConfig', { enable: scriptById(sim, id).enable });
         },
         getDeviceInfo: () => Object.assign({}, sim.deviceInfo),
         getCurrentScriptId: () => sim.scriptId,
@@ -309,8 +314,9 @@ function timerApi(sim) {
         },
         clear(handle) {
             const timer = sim.timers.find((entry) => entry.handle === handle);
-            if (timer) timer.isCleared = true;
-            return Boolean(timer);
+            if (!timer || timer.isCleared) return undefined;
+            timer.isCleared = true;
+            return true;
         },
     };
 }
@@ -355,6 +361,7 @@ function initialState(deviceOptions) {
         lastTimerHandle: 0,
         tasks: [],
         taskSequence: 0,
+        reads: [],
         callsInFlight: 0,
         crashed: null,
     };
@@ -375,6 +382,7 @@ function createShelly(options) {
         deviceInfo: GEN2_DEVICE,
     }, options);
     const sim = initialState(deviceOptions);
+    sim.options = deviceOptions;
     const shelly = shellyApi(sim);
     const timer = timerApi(sim);
     const log = (...parts) => sim.logs.push(parts.map(String).join(' '));
@@ -421,4 +429,4 @@ function runWatchdog(sim, code, stoppedScriptId) {
     return watchdog;
 }
 
-module.exports = { createShelly, runWatchdog, eleringRows, ROOT };
+module.exports = { createShelly, runWatchdog, eleringRows, ROOT, HEATING_SCRIPT };
