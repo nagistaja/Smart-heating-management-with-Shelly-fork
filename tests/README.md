@@ -136,23 +136,25 @@ The simulated device keeps its clock, its counters and its queue of pending time
 
 Every RPC answer and every status or configuration read reaches the script as a new copy, as on a device. The test checks this on itself as well: a script that keeps an answer or a read retains as much as a script that keeps the same value written out in its code.
 
-What stays in the numbers are the function calls of the simulated device. They are JavaScript here and firmware code on a device, and what the calls of the firmware cost a script was not measured. In the retained memory that part is always the same: an empty script retains 84 bytes, and peaks at 280. One empty function with one timer and one RPC answer peaks at 532 bytes and retains 112.
+What stays in the numbers are the function calls of the simulated device. They are JavaScript here and firmware code on a device, and what the calls of the firmware cost a script was not measured. In the retained memory that part is always the same: an empty script retains 84 bytes and one empty function with one timer and one RPC answer retains 112, as much as the function alone.
 
-In the peak that part depends on where the script is when it reaches the peak. The test holds the peak of the same work in five places:
+In the peak that part depends on where the script is when it reaches the peak. The test holds the peak of the same work in seven places:
 
 | Where the work is done | Peak in bytes |
 |---|---|
-| While the script loads | 1 918 |
-| In a timer callback | 2 212 |
-| In the callback of an RPC call | 2 324 |
-| While the script loads, with the memory still held during `Timer.set` | 2 408 |
-| In a timer callback, with the memory still held during `Timer.set` | 2 702 |
+| While the script loads | 1 848 |
+| In a timer callback | 2 156 |
+| In the callback of an RPC call | 2 268 |
+| While the script loads, with the memory still held during `Timer.set` | 2 324 |
+| In a timer callback, with the memory still held during `Timer.set` | 2 632 |
+| In the callback of an RPC call, with the memory still held during `Timer.set` | 2 744 |
+| In the callback of an RPC call, with the memory still held during a configuration read | 2 912 |
 
-So the simulated device adds nothing while the script loads, about 0.3 kB in a timer callback, about 0.4 kB in the callback of an RPC call, where the answer is a part of it, and about 0.5 kB more inside `Timer.set`. `Shelly.call` and the reads are functions of the simulated device in the same way. Version 4.9 reaches its peak in the callback of the Elering answer. The peaks of two versions can be compared when both reach it in the same kind of place. When a change moves work between loading, callbacks and calls to the device, up to about 0.8 kB of the difference can come from the simulated device, and the change has to be measured on a device.
+So the simulated device adds nothing while the script loads, about 0.3 kB in a timer callback and about 0.4 kB in the callback of an RPC call, where the answer is a part of it. While the script calls into the device it adds about 0.5 kB more in `Timer.set` and about 0.6 kB more in a configuration read, of which the answer is about 0.1 kB. `Shelly.call` is a function of the simulated device in the same way. Version 4.9 reaches its peak in the callback of the Elering answer. The peaks of two versions can be compared when both reach it in the same kind of place. When a change moves work between loading, callbacks and calls to the device, up to about 1 kB of the difference can come from the simulated device, and the change has to be measured on a device.
 
 The memory Espruino gets for the test is 5000 blocks, far more than a device has, so a case never fails for lack of memory.
 
-In Espruino the script must make the same RPC calls and reads in the same order as in Node. The second run in Espruino also compares the parameters of every call and the arguments of every read with the Node run and reports a difference. One value is left out of that: `LastCalculation` in `SmartHeatingSys`, a date text the two engines write differently. Espruino also writes a number that is not whole in its own way, 1/3 as `0.33333333333`, so such a number worked out by the script and sent in the parameters of a call is reported as a difference. Version 4.9 sends none.
+In Espruino the script must make the same RPC calls and reads in the same order as in Node. The second run in Espruino also compares the parameters of every call and the arguments of every read with the Node run and reports a difference. One value is left out of that: `LastCalculation` in `SmartHeatingSys`, a date text the two engines write differently. Espruino also writes a number with at most 11 decimal places, 1/3 as `0.33333333333`, and text outside ASCII byte by byte. A number that needs more places or such a text in the parameters of a call is therefore reported as a difference. Version 4.9 sends neither in KVS mode.
 
 `script-memory.js` holds the peak and the retained memory of version 4.9 for every case, between 15 624 and 16 072 bytes of peak and 3 906 to 3 934 bytes retained. A change that moves any of them fails the test until the table is updated, so a gain or a loss shows in the pull request.
 

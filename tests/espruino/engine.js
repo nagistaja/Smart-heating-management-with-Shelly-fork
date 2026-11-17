@@ -12,6 +12,7 @@ const SIMULATED_DEVICE = path.join(__dirname, 'shelly-device.js');
 const ONE_CYCLE = path.join(__dirname, 'one-cycle.js');
 const BINARY = path.join(__dirname, 'bin', 'espruino');
 const TIMEOUT_MS = 120000;
+const REPORTED_OUTPUT_CHARACTERS = 2000;
 const POOL_BLOCKS = 5000;
 const MARKS = { result: 'MEMRESULT', error: 'DEVICEERROR' };
 const KVS_KEY_WITH_DATE_TEXT = /^SmartHeatingSys/;
@@ -33,13 +34,13 @@ function withoutDateText(params) {
     return { key: params.key, value };
 }
 
-function recordedCall(call) {
+function scenarioCall(call) {
     const hasDateText = call.method.toLowerCase() === 'kvs.set' && KVS_KEY_WITH_DATE_TEXT.test(call.params.key);
     const compared = hasDateText ? withoutDateText(call.params) : call.params;
     return { method: call.method, answer: call.answer, hasDateText, paramsText: JSON.stringify(compared === undefined ? null : compared) };
 }
 
-function recordedRead(read) {
+function scenarioRead(read) {
     return { name: read.name, argumentsText: `${read.type} ${read.id}`, answer: read.answer };
 }
 
@@ -49,8 +50,8 @@ function scenarioOf(sim, isComparing) {
         deviceInfo: sim.options.deviceInfo,
         scriptId: sim.options.scriptId,
         daylightSaving: DEVICE_DAYLIGHT_SAVING,
-        calls: sim.calls.map(recordedCall),
-        reads: sim.reads.map(recordedRead),
+        calls: sim.calls.map(scenarioCall),
+        reads: sim.reads.map(scenarioRead),
         isComparing,
         dateTextField: KVS_FIELD_WITH_DATE_TEXT,
         pendingTaskLimit: limits.RPC_CALL_LIMIT + limits.TIMER_LIMIT,
@@ -92,7 +93,7 @@ function parse(run) {
     const [resultText] = linesAfter(lines, MARKS.result);
     if (!resultText || run.exitCode !== 0) {
         const ending = run.isTimedOut ? `was killed after ${TIMEOUT_MS} ms` : `ended with exit code ${run.exitCode} and signal ${run.signal}`;
-        throw new Error(`Espruino ${resultText ? 'printed a result but' : 'printed no result and'} ${ending}:\n${run.output.slice(-2000)}`);
+        throw new Error(`Espruino ${resultText ? 'printed a result but' : 'printed no result and'} ${ending}:\n${run.output.slice(-REPORTED_OUTPUT_CHARACTERS)}`);
     }
     const result = JSON.parse(resultText);
     return {

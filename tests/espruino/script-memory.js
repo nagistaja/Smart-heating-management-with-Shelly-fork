@@ -46,15 +46,21 @@ const SCRIPTS_THAT_KEEP_NO_MORE = [
 ];
 const OWN_SHARE = { code: EMPTY_FUNCTION + ONE_TIMER + ONE_RPC_ANSWER, peakBytes: 532, retainedBytes: 112 };
 
-const WORK = "function work(isSettingTimer) { var items = []; for (var i = 0; i < 60; i++) items.push('item ' + i);"
-    + ' if (isSettingTimer) Timer.set(3600000, false, work); }';
-const WORK_RETAINED_BYTES = 182;
+const NO_DEVICE_CALL = '';
+const SET_TIMER = 'Timer.set(3600000, false, work);';
+const READ_CONFIGURATION = "Shelly.getComponentConfig('sys');";
+const AT_LOAD = ' work();';
+const IN_TIMER_CALLBACK = ' Timer.set(1000, false, work);';
+const IN_RPC_CALLBACK = " Shelly.call('KVS.Get', { key: 'missing' }, work);";
+const WORK_RETAINED_BYTES = 140;
 const SAME_WORK_BY_PLACE = [
-    { place: 'while the script loads', code: WORK + ' work();', peakBytes: 1918 },
-    { place: 'in a timer callback', code: WORK + ' Timer.set(1000, false, work);', peakBytes: 2212 },
-    { place: 'in the callback of an RPC call', code: WORK + " Shelly.call('KVS.Get', { key: 'missing' }, work);", peakBytes: 2324 },
-    { place: 'inside Timer.set while the script loads', code: WORK + ' work(true);', peakBytes: 2408 },
-    { place: 'inside Timer.set in a timer callback', code: WORK + ' Timer.set(1000, false, work, true);', peakBytes: 2702 },
+    { place: 'while the script loads', code: workHeldDuring(NO_DEVICE_CALL) + AT_LOAD, peakBytes: 1848 },
+    { place: 'in a timer callback', code: workHeldDuring(NO_DEVICE_CALL) + IN_TIMER_CALLBACK, peakBytes: 2156 },
+    { place: 'in the callback of an RPC call', code: workHeldDuring(NO_DEVICE_CALL) + IN_RPC_CALLBACK, peakBytes: 2268 },
+    { place: 'while the script loads, held during Timer.set', code: workHeldDuring(SET_TIMER) + AT_LOAD, peakBytes: 2324 },
+    { place: 'in a timer callback, held during Timer.set', code: workHeldDuring(SET_TIMER) + IN_TIMER_CALLBACK, peakBytes: 2632 },
+    { place: 'in the callback of an RPC call, held during Timer.set', code: workHeldDuring(SET_TIMER) + IN_RPC_CALLBACK, peakBytes: 2744 },
+    { place: 'in the callback of an RPC call, held during a configuration read', code: workHeldDuring(READ_CONFIGURATION) + IN_RPC_CALLBACK, peakBytes: 2912 },
 ];
 
 const KEPT_READS = [
@@ -62,6 +68,7 @@ const KEPT_READS = [
     ['a status read', "Shelly.getComponentStatus('sys')"],
     ['a configuration read with numbers that are not whole', "Shelly.getComponentConfig('sys')"],
     ['a configuration read with a boolean', "Shelly.getComponentConfig('script', 1)"],
+    ['the device information', 'Shelly.getDeviceInfo()'],
 ];
 const KEPT_ANSWERS = [
     ['the answer of an RPC call', 'Script.List', null],
@@ -76,6 +83,10 @@ const ANOTHER_READ = `Shelly.getComponentStatus(${IN_NODE} ? 'sys' : 'script', 1
 const ANOTHER_STORED_SCHEDULE = "Shelly.call('KVS.Set', { key: 'SmartHeatingSys1', value: JSON.stringify("
     + `{ LastCalculation: 'any', ExistingSchedule: ${IN_NODE} ? 3 : 4 }) }, function () {});`;
 const CALLS_WITHOUT_PARAMETERS = "Shelly.call('Script.List'); Shelly.call('Script.List', undefined, function () {});";
+
+function workHeldDuring(deviceCall) {
+    return `function work() { var items = []; for (var i = 0; i < 60; i++) items.push('item ' + i); ${deviceCall} }`;
+}
 
 function asLiteral(value) {
     return value === undefined ? 'undefined' : JSON.stringify(value);

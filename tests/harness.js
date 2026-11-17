@@ -260,9 +260,8 @@ function answerOf(sim, method, params) {
     return handler(sim, params || {});
 }
 
-function recordedRead(sim, read, answer) {
+function recordRead(sim, read, answer) {
     sim.reads.push(Object.assign({}, read, { answer: clone(answer) }));
-    return answer;
 }
 
 function shellyApi(sim) {
@@ -281,14 +280,14 @@ function shellyApi(sim) {
             });
         },
         getComponentStatus(type, id) {
-            const read = { name: 'getComponentStatus', type, id };
-            if (type === 'sys') return recordedRead(sim, read, { unixtime: Math.floor(sim.nowMs / MILLISECONDS_PER_SECOND) });
-            return recordedRead(sim, read, { mem_used: 0, mem_peak: 0 });
+            const answer = type === 'sys' ? { unixtime: Math.floor(sim.nowMs / MILLISECONDS_PER_SECOND) } : { mem_used: 0, mem_peak: 0 };
+            recordRead(sim, { name: 'getComponentStatus', type, id }, answer);
+            return answer;
         },
         getComponentConfig(type, id) {
-            const read = { name: 'getComponentConfig', type, id };
-            if (type === 'sys') return recordedRead(sim, read, { location: Object.assign({}, DEVICE_LOCATION) });
-            return recordedRead(sim, read, { enable: scriptById(sim, id).enable });
+            const answer = type === 'sys' ? { location: Object.assign({}, DEVICE_LOCATION) } : { enable: scriptById(sim, id).enable };
+            recordRead(sim, { name: 'getComponentConfig', type, id }, answer);
+            return answer;
         },
         getDeviceInfo: () => Object.assign({}, sim.deviceInfo),
         getCurrentScriptId: () => sim.scriptId,

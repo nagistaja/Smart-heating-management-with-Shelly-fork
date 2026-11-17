@@ -135,6 +135,27 @@ describe('simulated device limits', () => {
         assert.match(String(sim.crashed), /timers active/);
     });
 
+    it('answers Timer.clear with true for a pending timer and with undefined after that', () => {
+        const sim = emptyDevice();
+        const clearTimer = `Timer.clear(${sim.setTimer(1000)})`;
+        assert.equal(sim.eval(clearTimer), true);
+        assert.equal(sim.eval(clearTimer), undefined);
+    });
+
+    it('gives the callback of a failed RPC call no result, a code and a message', () => {
+        const answer = emptyDevice().rpc('KVS.Get', { key: 'missing' });
+        assert.equal(answer.result, undefined);
+        assert.equal(answer.code, limits.ERR_NOT_FOUND);
+        assert.match(answer.message, /missing/);
+    });
+
+    it('gives the callback of a successful RPC call a result, the code 0 and an empty message', () => {
+        const answer = emptyDevice().rpc('KVS.Set', { key: 'any', value: '1' });
+        assert.notEqual(answer.result, undefined);
+        assert.equal(answer.code, 0);
+        assert.equal(answer.message, '');
+    });
+
     it('stops a run that never comes to rest', () => {
         const sim = emptyDevice();
         sim.eval('Timer.set(0, true, function () {});');
