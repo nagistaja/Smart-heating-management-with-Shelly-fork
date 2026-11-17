@@ -15,21 +15,21 @@ const DEFAULT_SETTINGS = { name: 'default settings', conf: DEFAULT_CONF };
 const STORAGE_TANK = { name: 'storage tank with forecast', conf: STORAGE_TANK_CONF };
 const HOT_WATER = { name: 'hot water in 6 h periods', conf: HOT_WATER_CONF };
 const VERSION_4_9 = [
-    { settings: DEFAULT_SETTINGS, day: NORMAL_DAY, peakBytes: 15736, retainedBytes: 3934 },
-    { settings: DEFAULT_SETTINGS, day: HOT_WATER_DAY, peakBytes: 16072, retainedBytes: 3934 },
-    { settings: DEFAULT_SETTINGS, day: NEGATIVE_DAY, peakBytes: 15652, retainedBytes: 3934 },
-    { settings: DEFAULT_SETTINGS, day: SPRING_DST_DAY, peakBytes: 15932, retainedBytes: 3934 },
-    { settings: DEFAULT_SETTINGS, day: AUTUMN_DST_DAY, peakBytes: 15890, retainedBytes: 3934 },
-    { settings: STORAGE_TANK, day: NORMAL_DAY, peakBytes: 15722, retainedBytes: 3920 },
-    { settings: STORAGE_TANK, day: HOT_WATER_DAY, peakBytes: 16058, retainedBytes: 3920 },
-    { settings: STORAGE_TANK, day: NEGATIVE_DAY, peakBytes: 15638, retainedBytes: 3920 },
-    { settings: STORAGE_TANK, day: SPRING_DST_DAY, peakBytes: 15918, retainedBytes: 3920 },
-    { settings: STORAGE_TANK, day: AUTUMN_DST_DAY, peakBytes: 15876, retainedBytes: 3920 },
-    { settings: HOT_WATER, day: NORMAL_DAY, peakBytes: 15708, retainedBytes: 3906 },
-    { settings: HOT_WATER, day: HOT_WATER_DAY, peakBytes: 16044, retainedBytes: 3906 },
-    { settings: HOT_WATER, day: NEGATIVE_DAY, peakBytes: 15624, retainedBytes: 3906 },
-    { settings: HOT_WATER, day: SPRING_DST_DAY, peakBytes: 15904, retainedBytes: 3906 },
-    { settings: HOT_WATER, day: AUTUMN_DST_DAY, peakBytes: 15862, retainedBytes: 3906 },
+    { settings: DEFAULT_SETTINGS, day: NORMAL_DAY, peakBytes: 15624, retainedBytes: 3780 },
+    { settings: DEFAULT_SETTINGS, day: HOT_WATER_DAY, peakBytes: 15960, retainedBytes: 3780 },
+    { settings: DEFAULT_SETTINGS, day: NEGATIVE_DAY, peakBytes: 15540, retainedBytes: 3780 },
+    { settings: DEFAULT_SETTINGS, day: SPRING_DST_DAY, peakBytes: 15820, retainedBytes: 3780 },
+    { settings: DEFAULT_SETTINGS, day: AUTUMN_DST_DAY, peakBytes: 15778, retainedBytes: 3780 },
+    { settings: STORAGE_TANK, day: NORMAL_DAY, peakBytes: 15610, retainedBytes: 3766 },
+    { settings: STORAGE_TANK, day: HOT_WATER_DAY, peakBytes: 15946, retainedBytes: 3766 },
+    { settings: STORAGE_TANK, day: NEGATIVE_DAY, peakBytes: 15526, retainedBytes: 3766 },
+    { settings: STORAGE_TANK, day: SPRING_DST_DAY, peakBytes: 15806, retainedBytes: 3766 },
+    { settings: STORAGE_TANK, day: AUTUMN_DST_DAY, peakBytes: 15764, retainedBytes: 3766 },
+    { settings: HOT_WATER, day: NORMAL_DAY, peakBytes: 15596, retainedBytes: 3752 },
+    { settings: HOT_WATER, day: HOT_WATER_DAY, peakBytes: 15932, retainedBytes: 3752 },
+    { settings: HOT_WATER, day: NEGATIVE_DAY, peakBytes: 15512, retainedBytes: 3752 },
+    { settings: HOT_WATER, day: SPRING_DST_DAY, peakBytes: 15792, retainedBytes: 3752 },
+    { settings: HOT_WATER, day: AUTUMN_DST_DAY, peakBytes: 15750, retainedBytes: 3752 },
 ];
 
 const EMPTY_SCRIPT = { code: '', peakBytes: 280, retainedBytes: 84 };
@@ -78,6 +78,31 @@ const KEPT_ANSWERS = [
     ['the answer of an RPC call', 'Script.List', null],
     ['an answer with the result null', 'Group.Set', { value: [] }],
     ['the answer of a failed RPC call', 'KVS.Get', { key: 'missing' }],
+];
+
+const FIRST_USE_AS_ON_A_GEN4 = [
+    { name: 'a method of a string', code: "'ab'.indexOf('b');", bytes: 0 },
+    { name: 'a method of a number', code: '(1.5).toFixed(1);', bytes: 0 },
+    { name: 'a method of a boolean', code: 'true.toString();', bytes: 0 },
+    { name: 'a method of an array', code: '[1].push(2);', bytes: 0 },
+    { name: 'Date.now', code: 'Date.now();', bytes: 28 },
+    { name: 'a Date object', code: 'new Date();', bytes: 98 },
+    { name: 'JSON', code: "JSON.parse('1');", bytes: 28 },
+    { name: 'console', code: "console.log('x');", bytes: 42 },
+    { name: 'a caught Error', code: "try { throw new Error('x'); } catch (e) {}", bytes: 112 },
+    { name: 'Float64Array', code: 'new Float64Array(1);', bytes: 112 },
+    { name: 'Uint32Array', code: 'new Uint32Array(1);', bytes: 112 },
+    { name: 'Uint16Array', code: 'new Uint16Array(1);', bytes: 112 },
+    { name: 'a kept Float64Array of 24 numbers', code: 'var kept = new Float64Array(24);', bytes: 364 },
+    { name: 'a kept Uint16Array of 24 numbers', code: 'var kept = new Uint16Array(24);', bytes: 224 },
+];
+const FIRST_USE_FREE_ONLY_HERE = [
+    { name: 'Math', code: 'Math.floor(1.5);', gen4Bytes: 28 },
+    { name: 'the function Number', code: "Number('1');", gen4Bytes: 42 },
+    { name: 'the function String', code: 'String(1);', gen4Bytes: 42 },
+    { name: 'Object.keys', code: 'Object.keys({ a: 1 });', gen4Bytes: 42 },
+    { name: 'Array.isArray', code: 'Array.isArray([]);', gen4Bytes: 42 },
+    { name: 'new Array', code: 'new Array(2);', gen4Bytes: 112 },
 ];
 
 const IN_NODE = "typeof process === 'undefined'";
@@ -185,6 +210,22 @@ describe('the simulated device in Espruino', { concurrency: true }, () => {
             assertSameRunAsInNode(kept);
             assertSameRunAsInNode(literal);
             assert.equal(kept.retainedBytes, literal.retainedBytes);
+        });
+    }
+
+    for (const { name, code, bytes } of FIRST_USE_AS_ON_A_GEN4) {
+        it(`charges the first use of ${name} ${bytes} bytes, as a Gen4 does`, async () => {
+            const measured = await measure({ code });
+            assertSameRunAsInNode(measured);
+            assert.equal(measured.retainedBytes - EMPTY_SCRIPT.retainedBytes, bytes);
+        });
+    }
+
+    for (const { name, code, gen4Bytes } of FIRST_USE_FREE_ONLY_HERE) {
+        it(`charges the first use of ${name} nothing, where a Gen4 charges ${gen4Bytes} bytes`, async () => {
+            const measured = await measure({ code });
+            assertSameRunAsInNode(measured);
+            assert.equal(measured.retainedBytes, EMPTY_SCRIPT.retainedBytes);
         });
     }
 

@@ -136,6 +136,23 @@ The simulated device keeps its clock, its counters and its queue of pending time
 
 Every RPC answer and every status or configuration read reaches the script as a new copy, as on a device. The test checks this on itself as well: a script that keeps an answer or a read retains as much as a script that keeps the same value written out in its code.
 
+Espruino makes the object of a built-in such as `Date` or `JSON` when a script first uses it, in the memory of the script. A Gen4 does the same, with one exception: the methods of a string, a number and a boolean cost nothing there. The simulated device follows the Gen4, and the test holds the cost of a first use next to what the Gen4 gave:
+
+| First use of | Gen4, bytes | Test, bytes |
+|---|---|---|
+| A method of a string, a number, a boolean or an array | 0 | 0 |
+| `Date.now()` | 28 | 28 |
+| `new Date()` | 98 | 98 |
+| `JSON` | 28 | 28 |
+| `console.log` | 42 | 42 |
+| A caught `Error` | 112 | 112 |
+| A typed array, for each type | 112 | 112 |
+| `Math` | 28 | 0 |
+| `Number(...)`, `String(...)`, `Object.keys`, `Array.isArray` | 42 each | 0 |
+| `new Array(...)` | 112 | 0 |
+
+The last three rows are free in the test because these objects exist there before the script loads: the simulated device uses `Math`, `Object` and `Array` itself, and making the methods of strings and numbers free makes `Number` and `String` free as well. Version 4.9 uses `Math` and `Number(...)`, 70 bytes on a Gen4 that the test leaves out. A change that adds or drops one of the objects of these three rows is not seen by the test.
+
 What stays in the numbers are the function calls of the simulated device. They are JavaScript here and firmware code on a device, and what the calls of the firmware cost a script was not measured. In the retained memory that part is always the same: an empty script retains 84 bytes and one empty function with one timer and one RPC answer retains 112, as much as the function alone.
 
 In the peak that part depends on where the script is when it reaches the peak. The test holds the peak of the same work in seven places:
@@ -156,7 +173,7 @@ The memory Espruino gets for the test is 5000 blocks, far more than a device has
 
 In Espruino the script must make the same RPC calls and reads in the same order as in Node. The second run in Espruino also compares the parameters of every call and the arguments of every read with the Node run and reports a difference. One value is left out of that: `LastCalculation` in `SmartHeatingSys`, a date text the two engines write differently. Espruino also writes a number with at most 11 decimal places, 1/3 as `0.33333333333`, and text outside ASCII byte by byte. A number that needs more places or such a text in the parameters of a call is therefore reported as a difference. Version 4.9 sends neither in KVS mode.
 
-`script-memory.js` holds the peak and the retained memory of version 4.9 for every case, between 15 624 and 16 072 bytes of peak and 3 906 to 3 934 bytes retained. A change that moves any of them fails the test until the table is updated, so a gain or a loss shows in the pull request.
+`script-memory.js` holds the peak and the retained memory of version 4.9 for every case, between 15 512 and 15 960 bytes of peak and 3 752 to 3 780 bytes retained. A change that moves any of them fails the test until the table is updated, so a gain or a loss shows in the pull request.
 
 ### How the numbers relate to a device
 
