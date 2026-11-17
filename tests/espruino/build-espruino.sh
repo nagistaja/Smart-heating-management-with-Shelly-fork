@@ -40,7 +40,8 @@ build_native() {
 # docker cp instead of a bind mount: Docker Desktop shares only some host paths
 build_i386() {
     docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
-    docker run -d --name "$CONTAINER" "$DOCKER_IMAGE" sleep infinity >/dev/null
+    # unquoted on purpose: ESPRUINO_DOCKER_OPTIONS may hold several options
+    docker run -d --name "$CONTAINER" ${ESPRUINO_DOCKER_OPTIONS:-} "$DOCKER_IMAGE" sleep infinity >/dev/null
     trap 'docker rm -f "$CONTAINER" >/dev/null 2>&1 || true' EXIT
     docker exec -e DEBIAN_FRONTEND=noninteractive "$CONTAINER" bash -c \
         "apt-get update -qq && apt-get install -y -qq gcc g++ make python3 python-is-python3 git >/dev/null"
