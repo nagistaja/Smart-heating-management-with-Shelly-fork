@@ -108,6 +108,8 @@ The memory test runs one calculation of the script in Espruino, the interpreter 
 
 `build-espruino.sh` builds Espruino for Linux in Docker, from a fixed Espruino commit and `espruino-shelly.patch`, into `tests/espruino/bin/`. The build is 32-bit, so a memory block is 14 bytes as on the devices. The patch adds a counter of the highest memory use, a clock the test can set, a memory size given at start and the loading of several files into one interpreter. `build-espruino.sh --native` builds without Docker, with 18 byte blocks, so its numbers differ.
 
+The GitHub Action builds Espruino once, in about 40 seconds, and keeps it in the cache until the build script or the patch changes. On the GitHub runner the 32-bit container cannot open a network socket under the default seccomp profile of Docker, so the Action sets `ESPRUINO_DOCKER_OPTIONS` to `--security-opt seccomp=unconfined` for the build container. On a workstation the default profile is enough.
+
 | File | What it is |
 |---|---|
 | `script-memory.js` | The test: three sets of settings on five days. |
