@@ -1,10 +1,26 @@
+This patch modifies Espruino (https://github.com/espruino/Espruino) at commit
+e73051ad4b9380a562da40796626254af1a19d57. Unlike the rest of this repository, this file is
+under the licence of Espruino:
+
+This Source Code Form is subject to the terms of the Mozilla Public
+License, v. 2.0. If a copy of the MPL was not distributed with this
+file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
 diff --git a/boards/LINUX_SHELLY.py b/boards/LINUX_SHELLY.py
 new file mode 100644
 index 0000000..6c361bb
 --- /dev/null
 +++ b/boards/LINUX_SHELLY.py
-@@ -0,0 +1,38 @@
+@@ -0,0 +1,46 @@
 +#!/bin/false
++# This file is part of Espruino, a JavaScript interpreter for Microcontrollers
++#
++# Copyright (C) 2013 Gordon Williams <gw@pur3.co.uk>
++#
++# This Source Code Form is subject to the terms of the Mozilla Public
++# License, v. 2.0. If a copy of the MPL was not distributed with this
++# file, You can obtain one at http://mozilla.org/MPL/2.0/.
++#
 +# Linux build with the ESP32 variable format (16383 vars, 14 bit refs, JSVAR_MALLOC) for
 +# measuring Shelly script memory. ESPRUINO_VARS sets the variable count at start up.
 +# A 32-bit (i386) build has the 14 byte variables of the ESP32, a 64-bit build 18 bytes.

@@ -15,6 +15,7 @@ const TIMEOUT_MS = 120000;
 const POOL_BLOCKS = 5000;
 const MARKS = { result: 'MEMRESULT', error: 'DEVICEERROR' };
 const KVS_KEY_WITH_DATE_TEXT = /^SmartHeatingSys/;
+const KVS_FIELD_WITH_DATE_TEXT = 'LastCalculation';
 
 function hasBinary() {
     return fs.existsSync(BINARY);
@@ -26,10 +27,20 @@ function runInNode(caseOptions) {
     return sim;
 }
 
+function withoutDateText(params) {
+    const value = JSON.parse(params.value);
+    delete value[KVS_FIELD_WITH_DATE_TEXT];
+    return { key: params.key, value };
+}
+
 function recordedCall(call) {
-    const isKeyOnly = call.method.toLowerCase() === 'kvs.set' && KVS_KEY_WITH_DATE_TEXT.test(call.params.key);
-    const compared = isKeyOnly ? { key: call.params.key } : call.params;
-    return { method: call.method, answer: call.answer, isKeyOnly, paramsText: JSON.stringify(compared) };
+    const hasDateText = call.method.toLowerCase() === 'kvs.set' && KVS_KEY_WITH_DATE_TEXT.test(call.params.key);
+    const compared = hasDateText ? withoutDateText(call.params) : call.params;
+    return { method: call.method, answer: call.answer, hasDateText, paramsText: JSON.stringify(compared === undefined ? null : compared) };
+}
+
+function recordedRead(read) {
+    return { name: read.name, argumentsText: `${read.type} ${read.id}`, answer: read.answer };
 }
 
 function scenarioOf(sim, isComparing) {
@@ -39,8 +50,9 @@ function scenarioOf(sim, isComparing) {
         scriptId: sim.options.scriptId,
         daylightSaving: DEVICE_DAYLIGHT_SAVING,
         calls: sim.calls.map(recordedCall),
-        reads: sim.reads,
+        reads: sim.reads.map(recordedRead),
         isComparing,
+        dateTextField: KVS_FIELD_WITH_DATE_TEXT,
         pendingTaskLimit: limits.RPC_CALL_LIMIT + limits.TIMER_LIMIT,
         runSeconds: CYCLE_SECONDS,
         millisecondsPerSecond: MILLISECONDS_PER_SECOND,

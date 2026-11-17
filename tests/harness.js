@@ -260,8 +260,8 @@ function answerOf(sim, method, params) {
     return handler(sim, params || {});
 }
 
-function recordedRead(sim, name, answer) {
-    sim.reads.push({ name, answer: clone(answer) });
+function recordedRead(sim, read, answer) {
+    sim.reads.push(Object.assign({}, read, { answer: clone(answer) }));
     return answer;
 }
 
@@ -280,13 +280,15 @@ function shellyApi(sim) {
                 if (typeof callback === 'function') callback(result, code, message, userdata);
             });
         },
-        getComponentStatus(type) {
-            if (type === 'sys') return recordedRead(sim, 'getComponentStatus', { unixtime: Math.floor(sim.nowMs / MILLISECONDS_PER_SECOND) });
-            return recordedRead(sim, 'getComponentStatus', { mem_used: 0, mem_peak: 0 });
+        getComponentStatus(type, id) {
+            const read = { name: 'getComponentStatus', type, id };
+            if (type === 'sys') return recordedRead(sim, read, { unixtime: Math.floor(sim.nowMs / MILLISECONDS_PER_SECOND) });
+            return recordedRead(sim, read, { mem_used: 0, mem_peak: 0 });
         },
         getComponentConfig(type, id) {
-            if (type === 'sys') return recordedRead(sim, 'getComponentConfig', { location: Object.assign({}, DEVICE_LOCATION) });
-            return recordedRead(sim, 'getComponentConfig', { enable: scriptById(sim, id).enable });
+            const read = { name: 'getComponentConfig', type, id };
+            if (type === 'sys') return recordedRead(sim, read, { location: Object.assign({}, DEVICE_LOCATION) });
+            return recordedRead(sim, read, { enable: scriptById(sim, id).enable });
         },
         getDeviceInfo: () => Object.assign({}, sim.deviceInfo),
         getCurrentScriptId: () => sim.scriptId,

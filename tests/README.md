@@ -21,6 +21,8 @@ Node 22 or newer, no dependencies. `node --test` and running one file work as we
 | `fixtures/` | Elering price answers (15 minute prices, `fields=ee`) and an Open-Meteo forecast, downloaded from the real services. |
 | `espruino/` | The memory test, see [Memory](#memory). |
 
+The forecast is weather data by [Open-Meteo.com](https://open-meteo.com/), unchanged, under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).
+
 The Elering files are ISO-8859-1, as Elering serves them. The only character outside ASCII is in the header line, which the script skips. Each file covers the planned day and a few hours around it. The simulation answers a request with the rows from `start` to `end`, both included. Elering does the same, checked against the live service with the address the script builds: one day gives 97 rows. The 25 hour day is planned from prices only because of that last row.
 
 The tests pin what the script does today, also where that differs from the price list, the calendar or its own comments. `oracle.js` follows the price list and the calendar day, so these cases are pinned with literal values, without it:
@@ -106,12 +108,12 @@ tests/espruino/build-espruino.sh
 npm run test:memory
 ```
 
-The memory test runs one calculation of the script in Espruino, the interpreter the Shelly script engine is built on, and reads how much of the engine's memory the script takes. `npm test` does not run it.
+The memory test runs one calculation of the script in Espruino, the interpreter the Shelly script engine is built on, and reads how much of the engine's memory the script takes. `npm test` does not run it. It takes about a minute, nearly all of it for the one case with a timer that fires 8571 times.
 
 | File | What it is |
 |---|---|
 | `build-espruino.sh` | Builds Espruino for Linux in Docker into `tests/espruino/bin/`, from a fixed Espruino commit and a fixed Debian image. The binary is 32-bit (`gcc -m32`), so a memory block is 14 bytes as on the devices. |
-| `espruino-shelly.patch` | Applied to Espruino before the build: a counter of the highest memory use, a clock the test can set, a memory size given at start and the loading of several files into one interpreter. |
+| `espruino-shelly.patch` | Applied to Espruino before the build: a counter of the highest memory use, a clock the test can set, a memory size given at start and the loading of several files into one interpreter. This one file is under the Mozilla Public License 2.0, as Espruino is. The rest of the repository is under the MIT licence. |
 | `script-memory.js` | The test: three sets of settings on five days, with the numbers of version 4.9 for each, and a few tiny scripts that check the simulated device itself. |
 | `engine.js` | Runs a case first in Node, then twice in Espruino: once to measure, once to compare with the Node run. |
 | `shelly-device.js` | The simulated device inside Espruino. It answers each RPC call and each status or configuration read with the answer the same one got in Node. |
@@ -119,7 +121,7 @@ The memory test runs one calculation of the script in Espruino, the interpreter 
 
 `ESPRUINO_WORKDIR` keeps the Espruino sources between builds, otherwise `build-espruino.sh` puts them in a temporary directory and removes it.
 
-The GitHub Action builds Espruino once, in about 40 seconds, and keeps it in the cache until the build script or the patch changes. GitHub also drops a cache that was not used for a week, and the next run then builds Espruino again.
+The GitHub Action builds Espruino once, in about 30 seconds, and keeps it in the cache until the build script or the patch changes. GitHub also drops a cache that was not used for a week, and the next run then builds Espruino again.
 
 ### What is measured
 
@@ -127,16 +129,32 @@ Every case runs in KVS mode on a simulated Shelly Plus 1PM that has only the set
 
 Two numbers are read, both counted from the moment the simulated device is ready and the script has not been loaded yet:
 
-- **Peak**: the most memory in use at one moment while the script loads and plans, checked at every allocation.
+- **Peak**: the most memory in use at one moment while the script loads and plans, checked at every allocation. The garbage collector does not run between the callbacks, so objects that refer to each other, which only the collector frees, stay in the peak until the end. Version 4.9 leaves none: with a collection after every callback its numbers are the same.
 - **Retained**: what is still in use after the calculation.
 
-The simulated device keeps its queue of pending timers and RPC answers in memory it took before that moment, so the queue is not in the numbers. On a Gen4 a second and a third pending timer added nothing to the memory of a script either. The test checks this on itself: a script that is one empty function retains 126 bytes, and exactly as much with five timers that have fired, with three pending timers and with three RPC answers.
+The simulated device keeps its clock, its counters and its queue of pending timers and RPC answers in memory it took before that moment, so they are not in the numbers. On a Gen4 a second and a third pending timer added nothing to the memory of a script either. The test checks this on itself: a script that is one empty function retains 112 bytes, and exactly as much with five timers that have fired, with three pending timers, with three RPC answers and with a timer that fires 8571 times.
 
-What stays in the numbers are the function calls of the simulated device while it calls into the script. An empty script peaks at 294 bytes and retains 98. One empty function with one timer and one RPC answer peaks at 532 bytes and retains 126. That part is the same for every version of the script.
+Every RPC answer and every status or configuration read reaches the script as a new copy, as on a device. The test checks this on itself as well: a script that keeps an answer or a read retains as much as a script that keeps the same value written out in its code.
+
+What stays in the numbers are the function calls of the simulated device. They are JavaScript here and firmware code on a device, and what the calls of the firmware cost a script was not measured. In the retained memory that part is always the same: an empty script retains 84 bytes, and peaks at 280. One empty function with one timer and one RPC answer peaks at 532 bytes and retains 112.
+
+In the peak that part depends on where the script is when it reaches the peak. The test holds the peak of the same work in five places:
+
+| Where the work is done | Peak in bytes |
+|---|---|
+| While the script loads | 1 918 |
+| In a timer callback | 2 212 |
+| In the callback of an RPC call | 2 324 |
+| While the script loads, with the memory still held during `Timer.set` | 2 408 |
+| In a timer callback, with the memory still held during `Timer.set` | 2 702 |
+
+So the simulated device adds nothing while the script loads, about 0.3 kB in a timer callback, about 0.4 kB in the callback of an RPC call, where the answer is a part of it, and about 0.5 kB more inside `Timer.set`. `Shelly.call` and the reads are functions of the simulated device in the same way. Version 4.9 reaches its peak in the callback of the Elering answer. The peaks of two versions can be compared when both reach it in the same kind of place. When a change moves work between loading, callbacks and calls to the device, up to about 0.8 kB of the difference can come from the simulated device, and the change has to be measured on a device.
 
 The memory Espruino gets for the test is 5000 blocks, far more than a device has, so a case never fails for lack of memory.
 
-In Espruino the script must make the same RPC calls and reads in the same order as in Node. The second run in Espruino also compares the parameters of every call with the Node run and reports a difference. One value is left out of that: the date text in `SmartHeatingSys`, which the two engines write differently. `script-memory.js` holds the peak and the retained memory of version 4.9 for every case, between 15 624 and 16 072 bytes of peak and 3 920 to 3 948 bytes retained. A change that moves any of them fails the test until the table is updated, so a gain or a loss shows in the pull request.
+In Espruino the script must make the same RPC calls and reads in the same order as in Node. The second run in Espruino also compares the parameters of every call and the arguments of every read with the Node run and reports a difference. One value is left out of that: `LastCalculation` in `SmartHeatingSys`, a date text the two engines write differently. Espruino also writes a number that is not whole in its own way, 1/3 as `0.33333333333`, so such a number worked out by the script and sent in the parameters of a call is reported as a difference. Version 4.9 sends none.
+
+`script-memory.js` holds the peak and the retained memory of version 4.9 for every case, between 15 624 and 16 072 bytes of peak and 3 906 to 3 934 bytes retained. A change that moves any of them fails the test until the table is updated, so a gain or a loss shows in the pull request.
 
 ### How the numbers relate to a device
 
