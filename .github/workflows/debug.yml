@@ -11,19 +11,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - run: docker version --format '{{.Server.Version}}'; cat /etc/resolv.conf | head -5
-      - name: default network
+      - run: uname -r; docker info --format '{{.SecurityOptions}}'
+      - name: i386, what fails
         continue-on-error: true
-        run: docker run --rm i386/debian:trixie-slim bash -c "cat /etc/resolv.conf; getent hosts deb.debian.org; apt-get update -qq 2>&1 | tail -3; echo exit=\$?"
-      - name: amd64 image, default network
+        run: docker run --rm i386/debian:trixie-slim bash -c "getent hosts deb.debian.org; echo getent=\$?; getent ahostsv4 deb.debian.org | head -2; echo v4=\$?; (exec 3<>/dev/tcp/151.101.2.132/80 && echo tcp-by-ip-ok) 2>&1"
+      - name: i386, seccomp unconfined
         continue-on-error: true
-        run: docker run --rm debian:trixie-slim bash -c "getent hosts deb.debian.org; apt-get update -qq 2>&1 | tail -3"
-      - name: host network
+        run: docker run --rm --security-opt seccomp=unconfined i386/debian:trixie-slim bash -c "getent hosts deb.debian.org; apt-get update -qq 2>&1 | tail -3; echo exit=\$?"
+      - name: i386 bookworm
         continue-on-error: true
-        run: docker run --rm --network host i386/debian:trixie-slim bash -c "getent hosts deb.debian.org; apt-get update -qq 2>&1 | tail -3"
-      - name: started detached, then exec after a pause
-        continue-on-error: true
-        run: |
-          docker run -d --name probe i386/debian:trixie-slim sleep infinity
-          docker exec probe bash -c "getent hosts deb.debian.org; apt-get update -qq 2>&1 | tail -3"
-          docker rm -f probe
+        run: docker run --rm i386/debian:bookworm-slim bash -c "getent hosts deb.debian.org; apt-get update -qq 2>&1 | tail -3; echo exit=\$?"
